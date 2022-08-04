@@ -278,10 +278,12 @@ mod test{
     use core::task::Poll;
     use embedded_hal::digital::blocking::OutputPin;
     use embedded_hal::digital::ErrorType;
+    use fixed::traits::Fixed;
+    use fugit::{TimerDurationU32, TimerInstantU32};
     use mockall::mock;
     use nb::Error::WouldBlock;
     use crate::drivers::generic::{Generic, GenericStepError};
-    use crate::{Direction, Stepper};
+    use crate::{Direction, motion_control, Stepper};
     use crate::traits::Step;
 
     mock!{
@@ -296,6 +298,7 @@ mod test{
        }
     }
 
+    type FixedI64U32 = fixed::FixedI64<typenum::U32>;
     mock!{
         Timer{}
         impl fugit_timer::Timer<100> for Timer {
@@ -320,6 +323,43 @@ mod test{
         }
     }
 
+    struct OkTimer<const TIMER_HZ: u32>{}
+    impl<const TIMER_HZ: u32> OkTimer<TIMER_HZ> {
+        pub fn new() -> Self {  Self {} }
+    }
+    impl<const TIMER_HZ: u32> fugit_timer::Timer<TIMER_HZ> for OkTimer<TIMER_HZ>{
+        type Error = ();
+
+        fn now(&mut self) -> TimerInstantU32<TIMER_HZ> {
+            todo!()
+        }
+
+        fn start(&mut self, _duration: TimerDurationU32<TIMER_HZ>) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn cancel(&mut self) -> Result<(), Self::Error> {
+            todo!()
+        }
+
+        fn wait(&mut self) -> nb::Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    pub struct DelayToTicks;
+    impl<Delay: Fixed, const TIMER_HZ: u32> motion_control::DelayToTicks<Delay, TIMER_HZ> for DelayToTicks {
+        type Error = Infallible;
+
+        fn delay_to_ticks(&self, delay: Delay)
+                          -> Result<TimerDurationU32<TIMER_HZ>, Self::Error>
+        {
+            // TODO: This needs to be reviewed again.
+            // Compiling but am unsure about the logic
+            Ok(TimerDurationU32::<TIMER_HZ>::from_ticks(delay.to_u32().unwrap()))
+        }
+    }
+
     #[test]
     pub fn test_stepping() {
         let steps = [0b01 as u8, 0b10 as u8];
@@ -331,17 +371,13 @@ mod test{
             pin1.expect_set_low().return_once(|| Ok(()));
             pin2.expect_set_high().return_once(|| Ok(()));
 
-            let mut dir_timer = MockTimer::new();
-            dir_timer.expect_start().return_once(|_| Ok(()));
-            dir_timer.expect_wait().return_once(|| Ok(()));
+            let mut dir_timer  = OkTimer::<1>::new();
 
             let mut stepper = Stepper::from_driver(Generic::new([&mut pin1, &mut pin2], steps))
                 .enable_direction_control((), Direction::Backward, &mut dir_timer).expect("setting dit control to work")
                 .enable_step_control(());
-            //// Enable motion control using the software fallback
-            //.enable_motion_control((timer, profile, crate::motion_control::TimeConversionError::DelayToTicks));
 
-            let mut timer = MockTimer::new();
+            let mut timer : MockTimer = MockTimer::new();
             timer.expect_start().return_once(|_| Ok(()));
             timer.expect_wait().times(2).returning(|| Err(WouldBlock));
             timer.expect_wait().return_once(|| Ok(()));
@@ -354,13 +390,7 @@ mod test{
             assert_eq!(fut.poll(), Poll::Pending);
             assert_eq!(fut.poll(), Poll::Pending);
 
-            match fut.poll() {
-                Poll::Ready(_) => {
-                    assert!(true)
-                }
-                Poll::Pending => assert!(false)
-            };
-
+            assert_eq!(fut.poll(), Poll::Ready(Ok(())));
             assert_eq!(stepper.driver().step, Some(1));
         }
     }
@@ -376,17 +406,13 @@ mod test{
                 pin1.expect_set_low().return_once(|| Ok(()));
                 pin2.expect_set_high().return_once(|| Ok(()));
 
-                let mut dir_timer = MockTimer::new();
-                dir_timer.expect_start().return_once(|_| Ok(()));
-                dir_timer.expect_wait().return_once(|| Ok(()));
+                let mut dir_timer = OkTimer::<1>::new();
 
                 let mut stepper = Stepper::from_driver(Generic::new([&mut pin1, &mut pin2], steps))
                     .enable_direction_control((), Direction::Backward, &mut dir_timer).expect("setting dit control to work")
                     .enable_step_control(());
 
-                let mut timer = MockTimer::new();
-                timer.expect_start().return_once(|_| Ok(()));
-                timer.expect_wait().return_once(|| Ok(()));
+                let mut timer = OkTimer::<1>::new();
 
                 assert_eq!(stepper.driver().step, None);
 
@@ -410,17 +436,13 @@ mod test{
                 pin1.expect_set_high().return_once(|| Ok(()));
                 pin2.expect_set_low().return_once(|| Ok(()));
 
-                let mut dir_timer = MockTimer::new();
-                dir_timer.expect_start().return_once(|_| Ok(()));
-                dir_timer.expect_wait().return_once(|| Ok(()));
+                let mut dir_timer = OkTimer::<1>::new();
 
                 let mut stepper = Stepper::from_driver(Generic::new([&mut pin1, &mut pin2], steps))
                     .enable_direction_control((), Direction::Backward, &mut dir_timer).expect("setting dit control to work")
                     .enable_step_control(());
 
-                let mut timer = MockTimer::new();
-                timer.expect_start().return_once(|_| Ok(()));
-                timer.expect_wait().return_once(|| Ok(()));
+                let mut timer = OkTimer::<1>::new();
 
                 stepper.driver().set_step(1).expect("step be set");
                 assert_eq!(stepper.driver().step, Some(1));
@@ -437,6 +459,51 @@ mod test{
 
                 assert_eq!(stepper.driver().step, Some(0));
             }
+        }
+    }
+
+    #[test]
+    pub fn test_software_motion_control() {
+        let steps = [0 as u8, 1 as u8];
+
+        let mut pin1 = MockPin::new();
+
+        // The stepper will drive a single pin high and low, once per executed step.
+        // For the first 10 steps movement we are expecting 5 high and 5 low pulses
+        // For the second movement of 4 steps, we are adding 2 pulses each
+        pin1.expect_set_low().times(5 + 2).returning(|| Ok(()));
+        pin1.expect_set_high().times(5 + 2).returning(|| Ok(()));
+
+        let mut dir_timer = OkTimer::<1>::new();
+
+        let max_velocity = FixedI64U32::from_num(0.001);
+        let profile = ramp_maker::Trapezoidal::new(max_velocity);
+
+        let mut stepper = Stepper::from_driver(Generic::new([&mut pin1], steps))
+            .enable_direction_control((), Direction::Backward, &mut dir_timer).expect("setting dir control to work")
+            .enable_step_control(())
+            .enable_motion_control((dir_timer, profile, DelayToTicks));
+
+        let num_steps = 10;
+
+        {
+            // Assuming motion range of 0..=10 with the starting step at 0
+            // Moving to position 10
+            let mut fut = stepper.move_to_position(max_velocity, num_steps);
+            // Counting Pending polls is a brittle approach as the counts get thrown off by any changes
+            // to the underlying logic of the software motion controller.
+            // Expecting the correct count of High/Low pulses on the pin should be the correct approach here.
+            while fut.poll() == Poll::Pending { assert_eq!(fut.poll(), Poll::Pending); }
+            assert_eq!(fut.poll(), Poll::Ready(Ok(())));
+        }
+
+        // Moving to position 6 from position 10, 4 steps in total
+        {
+            let going_back_steps = 4;
+            let mut fut2 = stepper.move_to_position(max_velocity, num_steps - going_back_steps);
+
+            while fut2.poll() == Poll::Pending { assert_eq!(fut2.poll(), Poll::Pending); }
+            assert_eq!(fut2.poll(), Poll::Ready(Ok(())));
         }
     }
 

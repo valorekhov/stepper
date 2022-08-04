@@ -24,7 +24,7 @@ use crate::{traits::{
 }, util::ref_mut::RefMut, Direction};
 
 #[cfg(feature = "async")]
-use crate::traits::{EnableStepControlAsync, StepAsync};
+use crate::traits::{EnableStepControlAsync};
 
 /// Unified stepper motor interface
 ///

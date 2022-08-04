@@ -12,7 +12,6 @@
 use core::convert::Infallible;
 
 use embedded_hal::digital::blocking::OutputPin;
-use embedded_hal::digital::PinState;
 use embedded_hal::digital::PinState::{High, Low};
 use fugit::NanosDurationU32 as Nanoseconds;
 use crate::Direction;
