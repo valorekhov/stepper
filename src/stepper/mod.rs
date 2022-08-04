@@ -15,17 +15,16 @@ pub use self::{
 use core::convert::Infallible;
 
 use embedded_hal::digital::ErrorType;
-use fugit::NanosDurationU32 as Nanoseconds;
+use fugit::{NanosDurationU32 as Nanoseconds};
 use fugit_timer::Timer as TimerTrait;
 
-use crate::{
-    traits::{
-        EnableDirectionControl, EnableMotionControl, EnableStepControl,
-        EnableStepModeControl, MotionControl, SetDirection, SetStepMode, Step,
-    },
-    util::ref_mut::RefMut,
-    Direction,
-};
+use crate::{traits::{
+    EnableDirectionControl, EnableMotionControl, EnableStepControl,
+    EnableStepModeControl, MotionControl, SetDirection, SetStepMode, Step,
+}, util::ref_mut::RefMut, Direction};
+
+#[cfg(feature = "async")]
+use crate::traits::{EnableStepControlAsync, StepAsync};
 
 /// Unified stepper motor interface
 ///
@@ -113,8 +112,8 @@ impl<Driver> Stepper<Driver> {
     ///
     /// Can be used to access driver-specific functionality that can't be
     /// provided by `Stepper`'s abstract interface.
-    pub fn driver(&self) -> &Driver {
-        &self.driver
+    pub fn driver(&mut self) -> &mut Driver {
+        &mut self.driver
     }
 
     /// Access a mutable reference to the wrapped driver
@@ -269,12 +268,12 @@ impl<Driver> Stepper<Driver> {
     /// This method is only available, if the driver/controller supports
     /// enabling step control. It might no longer be available, once step
     /// control has been enabled.
-    pub fn enable_step_control<Resources>(
+    pub fn enable_step_control<Resources, const BUS_WIDTH: usize>(
         self,
         res: Resources,
     ) -> Stepper<Driver::WithStepControl>
     where
-        Driver: EnableStepControl<Resources>,
+        Driver: EnableStepControl<Resources, BUS_WIDTH>,
     {
         Stepper {
             driver: self.driver.enable_step_control(res),
@@ -289,16 +288,93 @@ impl<Driver> Stepper<Driver> {
     ///
     /// You might need to call [`Stepper::enable_step_control`] to make this
     /// method available.
-    pub fn step<'r, Timer, const TIMER_HZ: u32>(
+    pub fn step<'r, Timer, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>(
         &'r mut self,
         timer: &'r mut Timer,
-    ) -> StepFuture<RefMut<'r, Driver>, RefMut<'r, Timer>, TIMER_HZ>
-    where
-        Driver: Step,
-        Timer: TimerTrait<TIMER_HZ>,
+    ) -> StepFuture<RefMut<'r, Driver>, RefMut<'r, Timer>, TIMER_HZ, STEP_BUS_WIDTH>
+        where
+            Driver: Step<STEP_BUS_WIDTH>,
+            Timer: TimerTrait<TIMER_HZ>,
     {
         StepFuture::new(RefMut(&mut self.driver), RefMut(timer))
     }
+
+    /// Enable step control with async futures
+    ///
+    /// Consumes this instance of `Stepper` and returns a new instance that
+    /// provides control over stepping the motor. Once this method has been
+    /// called, the [`Stepper::step_async`] method becomes available.
+    ///
+    /// Takes the hardware resources that are required for controlling the
+    /// stepping as an argument. What exactly those are depends on the specific
+    /// driver. Typically it's going to be the output pin that is connected to
+    /// the hardware's STEP pin.
+    ///
+    /// This method is only available, if the driver/controller supports
+    /// enabling async step control. It might no longer be available, once step
+    /// control has been enabled.
+    #[cfg(feature = "async")]
+    pub fn enable_step_control_async<'a, Resources, Delay>(
+        self,
+        res: Resources,
+        delay: Delay
+    ) -> Stepper<Driver::WithAsyncStepControl>
+        where
+            Driver: EnableStepControlAsync<Resources, Delay>,
+    {
+        Stepper {
+            driver: self.driver.enable_step_control_async(res, delay),
+        }
+    }
+
+    // /// Rotates the motor one step in the given direction
+    // ///
+    // /// Steps the motor one step in the direction that was previously set,
+    // /// according to the current entry in the pin firing configuration. To achieve a specific
+    // /// speed, the user must call this method at an appropriate frequency.
+    // ///
+    // /// You might need to call [`Stepper::enable_step_control`] to make this
+    // /// method available.
+    // #[cfg(feature = "async")]
+    // pub fn step_async_<'r, Delay, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>(
+    //     &'r mut self,
+    //     delay: &'r mut Delay,
+    // ) -> impl core::future::Future<Output = Result<
+    //         (),
+    //         SignalError<
+    //             <Driver::StepPin as Step<STEP_BUS_WIDTH>>::Error,
+    //             <Driver::StepPin as ErrorType>::Error,
+    //             Delay::Error,
+    //         >,
+    //     >> + 'r
+    //     where
+    //         Driver: Step<STEP_BUS_WIDTH> + OutputPin,
+    //         Delay: DelayUs,
+    //         <Driver as Step<STEP_BUS_WIDTH>>::StepPin: Step<STEP_BUS_WIDTH>,
+    //         SignalError<
+    //             <Driver::StepPin as Step<STEP_BUS_WIDTH>>::Error,
+    //             <Driver::StepPin as ErrorType>::Error,
+    //             Delay::Error,
+    //         >: From< SignalError<
+    //             <Driver as Step<STEP_BUS_WIDTH>>::Error,
+    //             <Driver::StepPin as ErrorType>::Error,
+    //             Delay::Error,
+    //         >>
+    //
+    // {
+    //     step::step_async::<Driver, Delay, TIMER_HZ, STEP_BUS_WIDTH>(&mut self.driver, delay)
+    // }
+
+    // #[cfg(feature = "async")]
+    // /// Performs a step?
+    // pub fn step_async<'r>(
+    //     &'r mut self
+    // ) -> <Driver as StepAsync>::OutputFut<'r>
+    //     where
+    //         Driver: StepAsync,
+    // {
+    //     self.driver.step_async()
+    // }
 
     /// Returns the step pulse length of the wrapped driver/controller
     ///
@@ -307,9 +383,9 @@ impl<Driver> Stepper<Driver> {
     ///
     /// You might need to call [`Stepper::enable_step_control`] to make this
     /// method available.
-    pub fn pulse_length(&self) -> Nanoseconds
+    pub fn pulse_length<const BUS_WIDTH: usize>(&self) -> Nanoseconds
     where
-        Driver: Step,
+        Driver: Step<BUS_WIDTH>,
     {
         Driver::PULSE_LENGTH
     }
@@ -333,12 +409,12 @@ impl<Driver> Stepper<Driver> {
     /// hardware support, or through the aforementioned software fallback. It
     /// might no longer be available, once motion control support has been
     /// enabled.
-    pub fn enable_motion_control<Resources, const TIMER_HZ: u32>(
+    pub fn enable_motion_control<Resources, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>(
         self,
         res: Resources,
     ) -> Stepper<Driver::WithMotionControl>
     where
-        Driver: EnableMotionControl<Resources, TIMER_HZ>,
+        Driver: EnableMotionControl<Resources, TIMER_HZ, STEP_BUS_WIDTH>,
     {
         Stepper {
             driver: self.driver.enable_motion_control(res),

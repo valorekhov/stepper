@@ -26,6 +26,7 @@ use crate::{
     util::ref_mut::RefMut,
     Direction, SetDirectionFuture, SetStepModeFuture, StepFuture,
 };
+use crate::traits::OutputPinAction;
 
 use self::state::State;
 
@@ -46,8 +47,9 @@ pub struct SoftwareMotionControl<
     Profile: MotionProfile,
     Convert,
     const TIMER_HZ: u32,
+    const STEP_BUS_WIDTH: usize
 > {
-    state: State<Driver, Timer, Profile, TIMER_HZ>,
+    state: State<Driver, Timer, Profile, TIMER_HZ, STEP_BUS_WIDTH>,
     new_motion: Option<Direction>,
     profile: Profile,
     current_step: i32,
@@ -55,8 +57,8 @@ pub struct SoftwareMotionControl<
     convert: Convert,
 }
 
-impl<Driver, Timer, Profile, Convert, const TIMER_HZ: u32>
-    SoftwareMotionControl<Driver, Timer, Profile, Convert, TIMER_HZ>
+impl<Driver, Timer, Profile, Convert, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>
+    SoftwareMotionControl<Driver, Timer, Profile, Convert, TIMER_HZ, STEP_BUS_WIDTH>
 where
     Profile: MotionProfile,
 {
@@ -244,11 +246,11 @@ where
     pub fn step(
         &mut self,
     ) -> Result<
-        StepFuture<RefMut<Driver>, RefMut<Timer>, TIMER_HZ>,
+        StepFuture<RefMut<Driver>, RefMut<Timer>, TIMER_HZ, STEP_BUS_WIDTH>,
         BusyError<Infallible>,
     >
     where
-        Driver: Step,
+        Driver: Step<STEP_BUS_WIDTH>,
         Timer: TimerTrait<TIMER_HZ>,
     {
         let future = match &mut self.state {
@@ -262,10 +264,10 @@ where
     }
 }
 
-impl<Driver, Timer, Profile, Convert, const TIMER_HZ: u32> MotionControl
-    for SoftwareMotionControl<Driver, Timer, Profile, Convert, TIMER_HZ>
+impl<Driver, Timer, Profile, Convert, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize> MotionControl
+    for SoftwareMotionControl<Driver, Timer, Profile, Convert, TIMER_HZ, STEP_BUS_WIDTH>
 where
-    Driver: SetDirection + Step,
+    Driver: SetDirection + Step<STEP_BUS_WIDTH>,
     Profile: MotionProfile,
     Timer: TimerTrait<TIMER_HZ>,
     Profile::Velocity: Copy,
@@ -275,8 +277,8 @@ where
     type Error = Error<
         <Driver as SetDirection>::Error,
         <<Driver as SetDirection>::Dir as ErrorType>::Error,
-        <Driver as Step>::Error,
-        <<Driver as Step>::Step as ErrorType>::Error,
+        <Driver as Step<STEP_BUS_WIDTH>>::Error,
+        <<Driver as Step<STEP_BUS_WIDTH>>::StepPin as ErrorType>::Error,
         Timer::Error,
         Convert::Error,
     >;
@@ -336,8 +338,8 @@ where
 // mostly means we'd have to be idle. Since the "enable" traits are infallible,
 // we'd have to panic, and I don't know if that would be worth it.
 
-impl<Driver, Timer, Profile, Convert, const TIMER_HZ: u32> SetStepMode
-    for SoftwareMotionControl<Driver, Timer, Profile, Convert, TIMER_HZ>
+impl<Driver, Timer, Profile, Convert, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize> SetStepMode
+    for SoftwareMotionControl<Driver, Timer, Profile, Convert, TIMER_HZ, STEP_BUS_WIDTH>
 where
     Driver: SetStepMode,
     Profile: MotionProfile,
@@ -370,8 +372,8 @@ where
     }
 }
 
-impl<Driver, Timer, Profile, Convert, const TIMER_HZ: u32> SetDirection
-    for SoftwareMotionControl<Driver, Timer, Profile, Convert, TIMER_HZ>
+impl<Driver, Timer, Profile, Convert, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize> SetDirection
+    for SoftwareMotionControl<Driver, Timer, Profile, Convert, TIMER_HZ, STEP_BUS_WIDTH>
 where
     Driver: SetDirection,
     Profile: MotionProfile,
@@ -381,28 +383,35 @@ where
     type Dir = Driver::Dir;
     type Error = BusyError<Driver::Error>;
 
-    fn dir(&mut self) -> Result<&mut Self::Dir, Self::Error> {
+    fn dir(&mut self, direction: Direction) -> Result<OutputPinAction<&mut Self::Dir>, Self::Error> {
         match self.driver_mut() {
-            Some(driver) => driver.dir().map_err(|err| BusyError::Other(err)),
+            Some(driver) => driver.dir(direction).map_err(|err| BusyError::Other(err)),
             None => Err(BusyError::Busy),
         }
     }
 }
 
-impl<Driver, Timer, Profile, Convert, const TIMER_HZ: u32> Step
-    for SoftwareMotionControl<Driver, Timer, Profile, Convert, TIMER_HZ>
+impl<Driver, Timer, Profile, Convert, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize> Step<STEP_BUS_WIDTH>
+    for SoftwareMotionControl<Driver, Timer, Profile, Convert, TIMER_HZ, STEP_BUS_WIDTH>
 where
-    Driver: Step,
+    Driver: Step<STEP_BUS_WIDTH>,
     Profile: MotionProfile,
 {
     const PULSE_LENGTH: Nanoseconds = Driver::PULSE_LENGTH;
 
-    type Step = Driver::Step;
+    type StepPin = Driver::StepPin;
     type Error = BusyError<Driver::Error>;
 
-    fn step(&mut self) -> Result<&mut Self::Step, Self::Error> {
+    fn step_leading(&mut self) -> Result<[OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH ], Self::Error> {
         match self.driver_mut() {
-            Some(driver) => driver.step().map_err(|err| BusyError::Other(err)),
+            Some(driver) => driver.step_leading().map_err(|err| BusyError::Other(err)),
+            None => Err(BusyError::Busy),
+        }
+    }
+
+    fn step_trailing(&mut self) -> Result<[OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH ], Self::Error> {
+        match self.driver_mut() {
+            Some(driver) => driver.step_leading().map_err(|err| BusyError::Other(err)),
             None => Err(BusyError::Busy),
         }
     }
@@ -410,17 +419,17 @@ where
 
 // Blanket implementation of `EnableMotionControl` for all STEP/DIR stepper
 // drivers.
-impl<Driver, Timer, Profile, Convert, const TIMER_HZ: u32>
-    EnableMotionControl<(Timer, Profile, Convert), TIMER_HZ> for Driver
+impl<Driver, Timer, Profile, Convert, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>
+    EnableMotionControl<(Timer, Profile, Convert), TIMER_HZ, STEP_BUS_WIDTH> for Driver
 where
-    Driver: SetDirection + Step,
+    Driver: SetDirection + Step<STEP_BUS_WIDTH>,
     Profile: MotionProfile,
     Timer: TimerTrait<TIMER_HZ>,
     Profile::Velocity: Copy,
     Convert: DelayToTicks<Profile::Delay, TIMER_HZ>,
 {
     type WithMotionControl =
-        SoftwareMotionControl<Driver, Timer, Profile, Convert, TIMER_HZ>;
+        SoftwareMotionControl<Driver, Timer, Profile, Convert, TIMER_HZ, STEP_BUS_WIDTH>;
 
     fn enable_motion_control(
         self,

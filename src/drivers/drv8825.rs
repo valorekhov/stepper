@@ -12,15 +12,16 @@
 use core::convert::Infallible;
 
 use embedded_hal::digital::{blocking::OutputPin, PinState};
+use embedded_hal::digital::PinState::{High, Low};
 use fugit::NanosDurationU32 as Nanoseconds;
 
-use crate::{
-    step_mode::StepMode32,
-    traits::{
-        EnableDirectionControl, EnableStepControl, EnableStepModeControl,
-        SetDirection, SetStepMode, Step as StepTrait,
-    },
-};
+use crate::{Direction, step_mode::StepMode32, traits::{
+    EnableDirectionControl, EnableStepControl, EnableStepModeControl,
+    SetDirection, SetStepMode, Step as StepTrait,
+}};
+use crate::traits::{OutputPinAction};
+
+const STEP_PIN_BUS_WIDTH: usize = 1;
 
 /// The DRV8825 driver API
 ///
@@ -170,13 +171,16 @@ where
     type Dir = Dir;
     type Error = Infallible;
 
-    fn dir(&mut self) -> Result<&mut Self::Dir, Self::Error> {
-        Ok(&mut self.dir)
+    fn dir(&mut self, direction: Direction) -> Result<OutputPinAction<&mut Self::Dir>, Self::Error> {
+        Ok(OutputPinAction::Set(&mut self.dir, match direction {
+            Direction::Forward => High,
+            Direction::Backward => Low,
+        }))
     }
 }
 
 impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError>
-    EnableStepControl<Step>
+    EnableStepControl<Step, STEP_PIN_BUS_WIDTH>
     for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, (), Dir>
 where
     Step: OutputPin<Error = OutputPinError>,
@@ -199,7 +203,7 @@ where
     }
 }
 
-impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError> StepTrait
+impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError> StepTrait<STEP_PIN_BUS_WIDTH>
     for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir>
 where
     Step: OutputPin<Error = OutputPinError>,
@@ -208,10 +212,14 @@ where
     // https://www.ti.com/lit/ds/symlink/drv8825.pdf
     const PULSE_LENGTH: Nanoseconds = Nanoseconds::from_ticks(1900);
 
-    type Step = Step;
+    type StepPin = Step;
     type Error = Infallible;
 
-    fn step(&mut self) -> Result<&mut Self::Step, Self::Error> {
-        Ok(&mut self.step)
+    fn step_leading(&mut self) -> Result<[OutputPinAction<&mut Self::StepPin>; STEP_PIN_BUS_WIDTH ], Self::Error> {
+        Ok([OutputPinAction::Set(&mut self.step, High)])
+    }
+
+    fn step_trailing(&mut self) -> Result<[OutputPinAction<&mut Self::StepPin>; STEP_PIN_BUS_WIDTH ], Self::Error> {
+        Ok([OutputPinAction::Set(&mut self.step, Low)])
     }
 }

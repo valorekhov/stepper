@@ -12,15 +12,16 @@
 use core::convert::Infallible;
 
 use embedded_hal::digital::{blocking::OutputPin, PinState};
+use embedded_hal::digital::PinState::{High, Low};
 use fugit::NanosDurationU32 as Nanoseconds;
 
-use crate::{
-    step_mode::StepMode256,
-    traits::{
-        EnableDirectionControl, EnableStepControl, EnableStepModeControl,
-        SetDirection, SetStepMode, Step,
-    },
-};
+use crate::{Direction, step_mode::StepMode256, traits::{
+    EnableDirectionControl, EnableStepControl, EnableStepModeControl,
+    SetDirection, SetStepMode, Step,
+}};
+use crate::traits::OutputPinAction;
+
+const STEP_PIN_BUS_WIDTH: usize = 1;
 
 /// The STSPIN220 driver API
 ///
@@ -200,8 +201,11 @@ where
     type Dir = DirMode4;
     type Error = Infallible;
 
-    fn dir(&mut self) -> Result<&mut Self::Dir, Self::Error> {
-        Ok(&mut self.dir_mode4)
+    fn dir(&mut self, direction: Direction) -> Result<OutputPinAction<&mut Self::Dir>, Self::Error> {
+        Ok(OutputPinAction::Set(&mut self.dir_mode4, match direction {
+            Direction::Forward => High,
+            Direction::Backward => Low,
+        }))
     }
 }
 
@@ -213,7 +217,7 @@ impl<
         StepMode3,
         DirMode4,
         OutputPinError,
-    > EnableStepControl<StepMode3>
+    > EnableStepControl<StepMode3, 1>
     for STSPIN220<EnableFault, StandbyReset, Mode1, Mode2, (), DirMode4>
 where
     StepMode3: OutputPin<Error = OutputPinError>,
@@ -244,17 +248,21 @@ impl<
         StepMode3,
         DirMode4,
         OutputPinError,
-    > Step
+    > Step<1>
     for STSPIN220<EnableFault, StandbyReset, Mode1, Mode2, StepMode3, DirMode4>
 where
     StepMode3: OutputPin<Error = OutputPinError>,
 {
     const PULSE_LENGTH: Nanoseconds = Nanoseconds::from_ticks(100);
 
-    type Step = StepMode3;
+    type StepPin = StepMode3;
     type Error = Infallible;
 
-    fn step(&mut self) -> Result<&mut Self::Step, Self::Error> {
-        Ok(&mut self.step_mode3)
+    fn step_leading(&mut self) -> Result<[OutputPinAction<&mut Self::StepPin>; STEP_PIN_BUS_WIDTH ], Self::Error> {
+        Ok([OutputPinAction::Set(&mut self.step_mode3, High)])
+    }
+
+    fn step_trailing(&mut self) -> Result<[OutputPinAction<&mut Self::StepPin>; STEP_PIN_BUS_WIDTH ], Self::Error> {
+        Ok([OutputPinAction::Set(&mut self.step_mode3, Low)])
     }
 }

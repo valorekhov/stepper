@@ -7,8 +7,9 @@ use fugit::{
     TimerInstantU32 as TimerInstant,
 };
 use fugit_timer::Timer;
+use crate::Direction;
 
-use crate::traits::{MotionControl, SetDirection, SetStepMode, Step};
+use crate::traits::{MotionControl, OutputPinAction, SetDirection, SetStepMode, Step};
 
 /// Generic wrapper around a mutable reference
 ///
@@ -80,8 +81,8 @@ where
     type Dir = T::Dir;
     type Error = T::Error;
 
-    fn dir(&mut self) -> Result<&mut Self::Dir, Self::Error> {
-        self.0.dir()
+    fn dir(&mut self, direction: Direction) -> Result<OutputPinAction<&mut Self::Dir>, Self::Error> {
+        self.0.dir(direction)
     }
 }
 
@@ -107,16 +108,20 @@ where
     }
 }
 
-impl<'r, T> Step for RefMut<'r, T>
+impl<'r, T, const STEP_BUS_WIDTH: usize> Step<STEP_BUS_WIDTH> for RefMut<'r, T>
 where
-    T: Step,
+    T: Step<STEP_BUS_WIDTH>,
 {
     const PULSE_LENGTH: Nanoseconds = T::PULSE_LENGTH;
 
-    type Step = T::Step;
+    type StepPin = T::StepPin;
     type Error = T::Error;
 
-    fn step(&mut self) -> Result<&mut Self::Step, Self::Error> {
-        self.0.step()
+    fn step_leading(&mut self) -> Result<[OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH ], Self::Error> {
+        self.0.step_leading()
+    }
+
+    fn step_trailing(&mut self) -> Result<[OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH ], Self::Error> {
+        self.0.step_trailing()
     }
 }

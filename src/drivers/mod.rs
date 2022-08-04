@@ -12,3 +12,6 @@ pub mod stspin220;
 
 #[cfg(feature = "dq542ma")]
 pub mod dq542ma;
+
+#[cfg(feature = "generic-driver")]
+pub mod generic;

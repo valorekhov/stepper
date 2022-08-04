@@ -5,7 +5,7 @@ use embedded_hal::digital::ErrorType;
 use fugit::TimerDurationU32 as TimerDuration;
 use fugit_timer::Timer as TimerTrait;
 
-use crate::traits::Step;
+use crate::traits::{OutputPinAction, Step};
 
 use super::SignalError;
 
@@ -17,15 +17,15 @@ use super::SignalError;
 ///
 /// [`Stepper::step`]: crate::Stepper::step
 #[must_use]
-pub struct StepFuture<Driver, Timer, const TIMER_HZ: u32> {
+pub struct StepFuture<Driver, Timer, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize> {
     driver: Driver,
     timer: Timer,
     state: State,
 }
 
-impl<Driver, Timer, const TIMER_HZ: u32> StepFuture<Driver, Timer, TIMER_HZ>
+impl<Driver, Timer, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize> StepFuture<Driver, Timer, TIMER_HZ, STEP_BUS_WIDTH>
 where
-    Driver: Step,
+    Driver: Step<STEP_BUS_WIDTH>,
     Timer: TimerTrait<TIMER_HZ>,
 {
     /// Create new instance of `StepFuture`
@@ -61,19 +61,31 @@ where
             (),
             SignalError<
                 Driver::Error,
-                <Driver::Step as ErrorType>::Error,
+                <Driver::StepPin as ErrorType>::Error,
                 Timer::Error,
             >,
         >,
     > {
         match self.state {
             State::Initial => {
-                // Start step pulse
-                self.driver
-                    .step()
-                    .map_err(|err| SignalError::PinUnavailable(err))?
-                    .set_high()
-                    .map_err(|err| SignalError::Pin(err))?;
+                // Start step action
+                let mut pin_actions = self.driver
+                    .step_leading()
+                    .map_err(|err| SignalError::PinUnavailable(err))?;
+
+                for pin_action in pin_actions.iter_mut(){
+                    let action = match pin_action {
+                        // OutputPinAction::Pulse(pin) => Some((pin, SetPin::High)),
+                        // OutputPinAction::Toggle(pin, state, _) => Some((pin, *state)),
+                        OutputPinAction::Set(pin, state) => Some((pin, *state)),
+                        OutputPinAction::None => None
+                    };
+                    match action {
+                        Some((pin, state)) =>
+                            pin.set_state(state).map_err(|err| SignalError::Pin(err))?,
+                        _ => {}
+                    }
+                }
 
                 let ticks: TimerDuration<TIMER_HZ> =
                     Driver::PULSE_LENGTH.convert();
@@ -88,12 +100,24 @@ where
             State::PulseStarted => {
                 match self.timer.wait() {
                     Ok(()) => {
-                        // End step pulse
-                        self.driver
-                            .step()
-                            .map_err(|err| SignalError::PinUnavailable(err))?
-                            .set_low()
-                            .map_err(|err| SignalError::Pin(err))?;
+                        // End step action
+                        let mut pin_actions = self.driver
+                            .step_trailing()
+                            .map_err(|err| SignalError::PinUnavailable(err))?;
+
+                        for pin_action in pin_actions.iter_mut(){
+                            let action = match pin_action {
+                                // OutputPinAction::Pulse(pin) => Some((pin, SetPin::Low)),
+                                // OutputPinAction::Toggle(pin, _, state) => Some((pin, *state)),
+                                OutputPinAction::Set(pin, state) => Some((pin, *state)),
+                                OutputPinAction::None => None
+                            };
+                            match action {
+                                Some((pin, state)) =>
+                                    pin.set_state(state).map_err(|err| SignalError::Pin(err))?,
+                                _ => {}
+                            }
+                        }
 
                         self.state = State::Finished;
                         Poll::Ready(Ok(()))
@@ -119,7 +143,7 @@ where
         (),
         SignalError<
             Driver::Error,
-            <Driver::Step as ErrorType>::Error,
+            <Driver::StepPin as ErrorType>::Error,
             Timer::Error,
         >,
     > {
@@ -141,3 +165,60 @@ enum State {
     PulseStarted,
     Finished,
 }
+
+// #[cfg(feature = "async")]
+// use embedded_hal_async::delay::DelayUs;
+//
+// /// Rotates the motor one step in the given direction
+// ///
+// /// Steps the motor one step in the direction that was previously set,
+// /// according to the current entry in the pin firing configuration. To achieve a specific
+// /// speed, the user must call this method at an appropriate frequency.
+// ///
+// /// You might need to call [`Stepper::enable_step_control`] to make this
+// /// method available.
+// #[cfg(feature = "async")]
+// pub async fn step_async<Driver, Delay, const TIMER_HZ: u32, const BUS_WIDTH: usize>(
+//     driver: &mut Driver,
+//     delay: &mut Delay,
+// ) -> Result<
+//     (),
+//     SignalError<
+//         <Driver::StepPin as Step<BUS_WIDTH>>::Error,
+//         <Driver::StepPin as ErrorType>::Error,
+//         Delay::Error,
+//     >,
+// >
+//     where
+//         Driver: Step<BUS_WIDTH> + OutputPin,
+//         Delay: DelayUs,
+//         <Driver as Step<BUS_WIDTH>>::StepPin: Step<BUS_WIDTH>,
+//         SignalError<
+//             <Driver::StepPin as Step<BUS_WIDTH>>::Error,
+//             <Driver::StepPin as ErrorType>::Error,
+//             Delay::Error,
+//         >: From< SignalError<
+//             <Driver as Step<BUS_WIDTH>>::Error,
+//             <Driver::StepPin as ErrorType>::Error,
+//             Delay::Error,
+//         >>
+//
+// {
+//     driver
+//         .step()
+//         .map_err(|err| SignalError::PinUnavailable(err))?
+//         .set_high()
+//         .map_err(|err| SignalError::Pin(err))?;
+//
+//     delay.delay_us(Driver::PULSE_LENGTH.to_micros())
+//         .await
+//         .map_err(|err| SignalError::Timer(err))?;
+//
+//     driver
+//         .step()
+//         .map_err(|err| SignalError::PinUnavailable(err))?
+//         .set_low()
+//         .map_err(|err| SignalError::Pin(err))?;
+//
+//     Ok(())
+// }

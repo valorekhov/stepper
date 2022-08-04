@@ -24,7 +24,6 @@
 //! #             core::convert::Infallible,
 //! #             core::convert::Infallible,
 //! #             core::convert::Infallible,
-//! #             core::convert::Infallible,
 //! #         >
 //! #     > {
 //! #
@@ -41,8 +40,10 @@
 //! # >;
 //! #
 //! # struct Pin;
-//! # impl stepper::embedded_hal::digital::blocking::OutputPin for Pin {
+//! # impl embedded_hal::digital::ErrorType for Pin {
 //! #     type Error = core::convert::Infallible;
+//! # }
+//! # impl stepper::embedded_hal::digital::blocking::OutputPin for Pin {
 //! #     fn set_low(&mut self) -> Result<(), Self::Error> { Ok(()) }
 //! #     fn set_high(&mut self) -> Result<(), Self::Error> { Ok(()) }
 //! # }
@@ -163,6 +164,10 @@
 #![cfg_attr(not(test), no_std)]
 #![deny(missing_docs, rustdoc::broken_intra_doc_links)]
 
+#![feature(type_alias_impl_trait)]
+#![feature(generic_associated_types)]
+#![feature(mixed_integer_ops)]
+
 pub extern crate embedded_hal;
 pub extern crate fugit;
 pub extern crate ramp_maker;
@@ -177,6 +182,13 @@ pub mod util;
 mod stepper;
 
 pub use self::stepper::*;
+
+#[cfg(test)]
+#[cfg(feature = "async")]
+extern crate alloc;
+
+#[cfg(test)]
+mod test_utils;
 
 /// Defines the direction in which to rotate the motor
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

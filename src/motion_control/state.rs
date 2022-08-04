@@ -17,14 +17,14 @@ use super::{
     DelayToTicks,
 };
 
-pub enum State<Driver, Timer, Profile: MotionProfile, const TIMER_HZ: u32> {
+pub enum State<Driver, Timer, Profile: MotionProfile, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize> {
     Idle {
         driver: Driver,
         timer: Timer,
     },
     SetDirection(SetDirectionFuture<Driver, Timer, TIMER_HZ>),
     Step {
-        future: StepFuture<Driver, Timer, TIMER_HZ>,
+        future: StepFuture<Driver, Timer, TIMER_HZ, STEP_BUS_WIDTH>,
         delay: Profile::Delay,
     },
     StepDelay {
@@ -34,8 +34,8 @@ pub enum State<Driver, Timer, Profile: MotionProfile, const TIMER_HZ: u32> {
     Invalid,
 }
 
-pub fn update<Driver, Timer, Profile, Convert, const TIMER_HZ: u32>(
-    mut state: State<Driver, Timer, Profile, TIMER_HZ>,
+pub fn update<Driver, Timer, Profile, Convert, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>(
+    mut state: State<Driver, Timer, Profile, TIMER_HZ, STEP_BUS_WIDTH>,
     new_motion: &mut Option<Direction>,
     profile: &mut Profile,
     current_step: &mut i32,
@@ -47,16 +47,16 @@ pub fn update<Driver, Timer, Profile, Convert, const TIMER_HZ: u32>(
         Error<
             <Driver as SetDirection>::Error,
             <<Driver as SetDirection>::Dir as ErrorType>::Error,
-            <Driver as Step>::Error,
-            <<Driver as Step>::Step as ErrorType>::Error,
+            <Driver as Step<STEP_BUS_WIDTH>>::Error,
+            <<Driver as Step<STEP_BUS_WIDTH>>::StepPin as ErrorType>::Error,
             Timer::Error,
             Convert::Error,
         >,
     >,
-    State<Driver, Timer, Profile, TIMER_HZ>,
+    State<Driver, Timer, Profile, TIMER_HZ, STEP_BUS_WIDTH>,
 )
 where
-    Driver: SetDirection + Step,
+    Driver: SetDirection + Step<STEP_BUS_WIDTH>,
     Timer: TimerTrait<TIMER_HZ>,
     Profile: MotionProfile,
     Convert: DelayToTicks<Profile::Delay, TIMER_HZ>,
