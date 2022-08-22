@@ -17,7 +17,13 @@ use super::{
     DelayToTicks,
 };
 
-pub enum State<Driver, Timer, Profile: MotionProfile, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize> {
+pub enum State<
+    Driver,
+    Timer,
+    Profile: MotionProfile,
+    const TIMER_HZ: u32,
+    const STEP_BUS_WIDTH: usize,
+> {
     Idle {
         driver: Driver,
         timer: Timer,
@@ -34,7 +40,14 @@ pub enum State<Driver, Timer, Profile: MotionProfile, const TIMER_HZ: u32, const
     Invalid,
 }
 
-pub fn update<Driver, Timer, Profile, Convert, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>(
+pub fn update<
+    Driver,
+    Timer,
+    Profile,
+    Convert,
+    const TIMER_HZ: u32,
+    const STEP_BUS_WIDTH: usize,
+>(
     mut state: State<Driver, Timer, Profile, TIMER_HZ, STEP_BUS_WIDTH>,
     new_motion: &mut Option<Direction>,
     profile: &mut Profile,

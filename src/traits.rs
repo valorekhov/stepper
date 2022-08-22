@@ -20,11 +20,11 @@
 //!
 //! [`Stepper`]: crate::Stepper
 
+use crate::Direction;
 use core::future::Future;
 use embedded_hal::digital::blocking::OutputPin;
 use embedded_hal::digital::PinState;
 use fugit::NanosDurationU32 as Nanoseconds;
-use crate::Direction;
 
 use crate::step_mode::StepMode;
 
@@ -99,15 +99,18 @@ pub trait SetDirection {
     type Error;
 
     /// Provides access to the DIR pin
-    fn dir(&mut self, direction: Direction) -> Result<OutputPinAction<&mut Self::Dir>, Self::Error>;
+    fn dir(
+        &mut self,
+        direction: Direction,
+    ) -> Result<OutputPinAction<&mut Self::Dir>, Self::Error>;
 }
 
 /// Used to specify pin driving sequence
-pub enum OutputPinAction<Pin>{
+pub enum OutputPinAction<Pin> {
     /// Sets pin to specified [SetPin] state
     Set(Pin, PinState),
     /// No action to be taken
-    None
+    None,
 }
 
 /// Enable step control for a driver
@@ -140,10 +143,20 @@ pub trait Step<const STEP_BUS_WIDTH: usize> {
     type Error;
 
     /// Provides access to the STEP pins and associated Low/High state for the leading edge
-    fn step_leading(&mut self) -> Result<[OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH], Self::Error>;
+    fn step_leading(
+        &mut self,
+    ) -> Result<
+        [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
+        Self::Error,
+    >;
 
     /// Provides access to the STEP pins and associated Low/High state for the leading edge
-    fn step_trailing(&mut self) -> Result<[OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH], Self::Error>;
+    fn step_trailing(
+        &mut self,
+    ) -> Result<
+        [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
+        Self::Error,
+    >;
 }
 
 #[cfg(feature = "async")]
@@ -156,14 +169,20 @@ pub trait EnableStepControlAsync<Resources, Delay> {
     type WithAsyncStepControl: StepAsync;
 
     /// Enable step control
-    fn enable_step_control_async(self, res: Resources, delay: Delay) -> Self::WithAsyncStepControl;
+    fn enable_step_control_async(
+        self,
+        res: Resources,
+        delay: Delay,
+    ) -> Self::WithAsyncStepControl;
 }
 
 /// Implemented by drivers which handle firing firing of pins independently
 #[cfg(feature = "async")]
 pub trait StepAsync {
     /// The output future type
-    type OutputFut<'r>: Future<Output = Result<(), Self::Error>> where Self: 'r;
+    type OutputFut<'r>: Future<Output = Result<(), Self::Error>>
+    where
+        Self: 'r;
 
     /// The error that can occur while performing a step
     type Error;
@@ -176,7 +195,12 @@ pub trait StepAsync {
 ///
 /// The `Resources` type parameter defines the hardware resources required for
 /// motion control.
-pub trait EnableMotionControl<Resources, const TIMER_HZ: u32, const BUS_WIDTH: usize> {
+pub trait EnableMotionControl<
+    Resources,
+    const TIMER_HZ: u32,
+    const BUS_WIDTH: usize,
+>
+{
     /// The type of the driver after motion control has been enabled
     type WithMotionControl: MotionControl;
 

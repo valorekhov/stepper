@@ -15,16 +15,20 @@ pub use self::{
 use core::convert::Infallible;
 
 use embedded_hal::digital::ErrorType;
-use fugit::{NanosDurationU32 as Nanoseconds};
+use fugit::NanosDurationU32 as Nanoseconds;
 use fugit_timer::Timer as TimerTrait;
 
-use crate::{traits::{
-    EnableDirectionControl, EnableMotionControl, EnableStepControl,
-    EnableStepModeControl, MotionControl, SetDirection, SetStepMode, Step,
-}, util::ref_mut::RefMut, Direction};
+use crate::{
+    traits::{
+        EnableDirectionControl, EnableMotionControl, EnableStepControl,
+        EnableStepModeControl, MotionControl, SetDirection, SetStepMode, Step,
+    },
+    util::ref_mut::RefMut,
+    Direction,
+};
 
 #[cfg(feature = "async")]
-use crate::traits::{EnableStepControlAsync};
+use crate::traits::EnableStepControlAsync;
 
 /// Unified stepper motor interface
 ///
@@ -291,10 +295,15 @@ impl<Driver> Stepper<Driver> {
     pub fn step<'r, Timer, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>(
         &'r mut self,
         timer: &'r mut Timer,
-    ) -> StepFuture<RefMut<'r, Driver>, RefMut<'r, Timer>, TIMER_HZ, STEP_BUS_WIDTH>
-        where
-            Driver: Step<STEP_BUS_WIDTH>,
-            Timer: TimerTrait<TIMER_HZ>,
+    ) -> StepFuture<
+        RefMut<'r, Driver>,
+        RefMut<'r, Timer>,
+        TIMER_HZ,
+        STEP_BUS_WIDTH,
+    >
+    where
+        Driver: Step<STEP_BUS_WIDTH>,
+        Timer: TimerTrait<TIMER_HZ>,
     {
         StepFuture::new(RefMut(&mut self.driver), RefMut(timer))
     }
@@ -317,10 +326,10 @@ impl<Driver> Stepper<Driver> {
     pub fn enable_step_control_async<'a, Resources, Delay>(
         self,
         res: Resources,
-        delay: Delay
+        delay: Delay,
     ) -> Stepper<Driver::WithAsyncStepControl>
-        where
-            Driver: EnableStepControlAsync<Resources, Delay>,
+    where
+        Driver: EnableStepControlAsync<Resources, Delay>,
     {
         Stepper {
             driver: self.driver.enable_step_control_async(res, delay),
@@ -409,7 +418,11 @@ impl<Driver> Stepper<Driver> {
     /// hardware support, or through the aforementioned software fallback. It
     /// might no longer be available, once motion control support has been
     /// enabled.
-    pub fn enable_motion_control<Resources, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>(
+    pub fn enable_motion_control<
+        Resources,
+        const TIMER_HZ: u32,
+        const STEP_BUS_WIDTH: usize,
+    >(
         self,
         res: Resources,
     ) -> Stepper<Driver::WithMotionControl>

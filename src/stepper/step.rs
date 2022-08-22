@@ -17,13 +17,19 @@ use super::SignalError;
 ///
 /// [`Stepper::step`]: crate::Stepper::step
 #[must_use]
-pub struct StepFuture<Driver, Timer, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize> {
+pub struct StepFuture<
+    Driver,
+    Timer,
+    const TIMER_HZ: u32,
+    const STEP_BUS_WIDTH: usize,
+> {
     driver: Driver,
     timer: Timer,
     state: State,
 }
 
-impl<Driver, Timer, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize> StepFuture<Driver, Timer, TIMER_HZ, STEP_BUS_WIDTH>
+impl<Driver, Timer, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>
+    StepFuture<Driver, Timer, TIMER_HZ, STEP_BUS_WIDTH>
 where
     Driver: Step<STEP_BUS_WIDTH>,
     Timer: TimerTrait<TIMER_HZ>,
@@ -69,20 +75,22 @@ where
         match self.state {
             State::Initial => {
                 // Start step action
-                let mut pin_actions = self.driver
+                let mut pin_actions = self
+                    .driver
                     .step_leading()
                     .map_err(|err| SignalError::PinUnavailable(err))?;
 
-                for pin_action in pin_actions.iter_mut(){
+                for pin_action in pin_actions.iter_mut() {
                     let action = match pin_action {
                         // OutputPinAction::Pulse(pin) => Some((pin, SetPin::High)),
                         // OutputPinAction::Toggle(pin, state, _) => Some((pin, *state)),
                         OutputPinAction::Set(pin, state) => Some((pin, *state)),
-                        OutputPinAction::None => None
+                        OutputPinAction::None => None,
                     };
                     match action {
-                        Some((pin, state)) =>
-                            pin.set_state(state).map_err(|err| SignalError::Pin(err))?,
+                        Some((pin, state)) => pin
+                            .set_state(state)
+                            .map_err(|err| SignalError::Pin(err))?,
                         _ => {}
                     }
                 }
@@ -101,20 +109,24 @@ where
                 match self.timer.wait() {
                     Ok(()) => {
                         // End step action
-                        let mut pin_actions = self.driver
+                        let mut pin_actions = self
+                            .driver
                             .step_trailing()
                             .map_err(|err| SignalError::PinUnavailable(err))?;
 
-                        for pin_action in pin_actions.iter_mut(){
+                        for pin_action in pin_actions.iter_mut() {
                             let action = match pin_action {
                                 // OutputPinAction::Pulse(pin) => Some((pin, SetPin::Low)),
                                 // OutputPinAction::Toggle(pin, _, state) => Some((pin, *state)),
-                                OutputPinAction::Set(pin, state) => Some((pin, *state)),
-                                OutputPinAction::None => None
+                                OutputPinAction::Set(pin, state) => {
+                                    Some((pin, *state))
+                                }
+                                OutputPinAction::None => None,
                             };
                             match action {
-                                Some((pin, state)) =>
-                                    pin.set_state(state).map_err(|err| SignalError::Pin(err))?,
+                                Some((pin, state)) => pin
+                                    .set_state(state)
+                                    .map_err(|err| SignalError::Pin(err))?,
                                 _ => {}
                             }
                         }

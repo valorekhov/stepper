@@ -161,7 +161,6 @@
 
 #![cfg_attr(not(test), no_std)]
 #![deny(missing_docs, rustdoc::broken_intra_doc_links)]
-
 #![feature(type_alias_impl_trait)]
 #![feature(generic_associated_types)]
 #![feature(mixed_integer_ops)]

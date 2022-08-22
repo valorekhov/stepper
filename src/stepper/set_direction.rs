@@ -5,8 +5,8 @@ use embedded_hal::digital::ErrorType;
 use fugit::TimerDurationU32 as TimerDuration;
 use fugit_timer::Timer as TimerTrait;
 
-use crate::{traits::SetDirection, Direction};
 use crate::traits::OutputPinAction;
+use crate::{traits::SetDirection, Direction};
 
 use super::SignalError;
 
@@ -72,14 +72,16 @@ where
     > {
         match self.state {
             State::Initial => {
-                let action = self.driver
+                let action = self
+                    .driver
                     .dir(self.direction)
                     .map_err(|err| SignalError::PinUnavailable(err))?;
 
                 match action {
-                    OutputPinAction::Set(pin, state) =>
-                        pin.set_state(state).map_err(|err| SignalError::Pin(err))?,
-                    OutputPinAction::None => {},
+                    OutputPinAction::Set(pin, state) => pin
+                        .set_state(state)
+                        .map_err(|err| SignalError::Pin(err))?,
+                    OutputPinAction::None => {}
                 }
 
                 let ticks: TimerDuration<TIMER_HZ> =

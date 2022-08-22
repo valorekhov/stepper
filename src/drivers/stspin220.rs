@@ -11,15 +11,19 @@
 
 use core::convert::Infallible;
 
-use embedded_hal::digital::{blocking::OutputPin, PinState};
 use embedded_hal::digital::PinState::{High, Low};
+use embedded_hal::digital::{blocking::OutputPin, PinState};
 use fugit::NanosDurationU32 as Nanoseconds;
 
-use crate::{Direction, step_mode::StepMode256, traits::{
-    EnableDirectionControl, EnableStepControl, EnableStepModeControl,
-    SetDirection, SetStepMode, Step,
-}};
 use crate::traits::OutputPinAction;
+use crate::{
+    step_mode::StepMode256,
+    traits::{
+        EnableDirectionControl, EnableStepControl, EnableStepModeControl,
+        SetDirection, SetStepMode, Step,
+    },
+    Direction,
+};
 
 const STEP_PIN_BUS_WIDTH: usize = 1;
 
@@ -201,11 +205,17 @@ where
     type Dir = DirMode4;
     type Error = Infallible;
 
-    fn dir(&mut self, direction: Direction) -> Result<OutputPinAction<&mut Self::Dir>, Self::Error> {
-        Ok(OutputPinAction::Set(&mut self.dir_mode4, match direction {
-            Direction::Forward => High,
-            Direction::Backward => Low,
-        }))
+    fn dir(
+        &mut self,
+        direction: Direction,
+    ) -> Result<OutputPinAction<&mut Self::Dir>, Self::Error> {
+        Ok(OutputPinAction::Set(
+            &mut self.dir_mode4,
+            match direction {
+                Direction::Forward => High,
+                Direction::Backward => Low,
+            },
+        ))
     }
 }
 
@@ -258,11 +268,21 @@ where
     type StepPin = StepMode3;
     type Error = Infallible;
 
-    fn step_leading(&mut self) -> Result<[OutputPinAction<&mut Self::StepPin>; STEP_PIN_BUS_WIDTH ], Self::Error> {
+    fn step_leading(
+        &mut self,
+    ) -> Result<
+        [OutputPinAction<&mut Self::StepPin>; STEP_PIN_BUS_WIDTH],
+        Self::Error,
+    > {
         Ok([OutputPinAction::Set(&mut self.step_mode3, High)])
     }
 
-    fn step_trailing(&mut self) -> Result<[OutputPinAction<&mut Self::StepPin>; STEP_PIN_BUS_WIDTH ], Self::Error> {
+    fn step_trailing(
+        &mut self,
+    ) -> Result<
+        [OutputPinAction<&mut Self::StepPin>; STEP_PIN_BUS_WIDTH],
+        Self::Error,
+    > {
         Ok([OutputPinAction::Set(&mut self.step_mode3, Low)])
     }
 }
