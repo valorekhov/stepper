@@ -4,6 +4,9 @@ mod set_direction;
 mod set_step_mode;
 mod step;
 
+#[cfg(feature = "async")]
+mod stepper_async;
+
 pub use self::{
     error::{Error, SignalError},
     move_to::MoveToFuture,
@@ -26,9 +29,6 @@ use crate::{
     util::ref_mut::RefMut,
     Direction,
 };
-
-#[cfg(feature = "async")]
-use crate::traits::EnableStepControlAsync;
 
 /// Unified stepper motor interface
 ///
@@ -306,34 +306,6 @@ impl<Driver> Stepper<Driver> {
         Timer: TimerTrait<TIMER_HZ>,
     {
         StepFuture::new(RefMut(&mut self.driver), RefMut(timer))
-    }
-
-    /// Enable step control with async futures
-    ///
-    /// Consumes this instance of `Stepper` and returns a new instance that
-    /// provides control over stepping the motor. Once this method has been
-    /// called, the [`Stepper::step_async`] method becomes available.
-    ///
-    /// Takes the hardware resources that are required for controlling the
-    /// stepping as an argument. What exactly those are depends on the specific
-    /// driver. Typically it's going to be the output pin that is connected to
-    /// the hardware's STEP pin.
-    ///
-    /// This method is only available, if the driver/controller supports
-    /// enabling async step control. It might no longer be available, once step
-    /// control has been enabled.
-    #[cfg(feature = "async")]
-    pub fn enable_step_control_async<'a, Resources, Delay>(
-        self,
-        res: Resources,
-        delay: Delay,
-    ) -> Stepper<Driver::WithAsyncStepControl>
-    where
-        Driver: EnableStepControlAsync<Resources, Delay>,
-    {
-        Stepper {
-            driver: self.driver.enable_step_control_async(res, delay),
-        }
     }
 
     // /// Rotates the motor one step in the given direction

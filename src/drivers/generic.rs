@@ -16,8 +16,10 @@ use core::mem::MaybeUninit;
 
 use embedded_hal::digital::blocking::OutputPin;
 use embedded_hal::digital::PinState::{High, Low};
+use embedded_hal_async::delay::DelayUs;
 use fugit::NanosDurationU32 as Nanoseconds;
 
+use crate::traits_async::{DelayAsyncEnabled, SetDelayAsync, StepAsync};
 use crate::{
     traits::{
         EnableDirectionControl, EnableStepControl, OutputPinAction,
@@ -306,35 +308,90 @@ where
     }
 }
 
-// impl<LinePin, Delay, OutputPinError, const STEP_BUS_WIDTH: usize, const NUM_STEPS: usize>  Generic<LinePin, Delay, STEP_BUS_WIDTH, NUM_STEPS>
-// where LinePin: OutputPin<Error = OutputPinError>, Delay: DelayUs, OutputPinError: Debug {
-//     async fn step<Error>(self: &mut Self) -> Result<(), Error> {
-//         let mut current_step = self.step.unwrap_or_else(|| 0) as usize;
-//
-//         let firing_sequence = self.steps.get(current_step).expect("Within index");
-//
-//         for i in 0..STEP_BUS_WIDTH {
-//             let pin_idx = STEP_BUS_WIDTH - 1 - i;
-//             // println!("i = {:?}; pin_idx = {}", i, pin_idx);
-//             match self.pins[pin_idx] {
-//                 ref mut pin => {
-//                     // println!("firing_sequence = {:?}; cond = {:?}", firing_sequence, (firing_sequence >> i) & 0x01  );
-//                     (if (firing_sequence >> i) & 0x01 == 0x01
-//                         { pin.set_high() } else { pin.set_low() }).expect("it to work");
-//                 }
-//             };
-//         }
-//
-//         current_step += 1;
-//         if current_step >= NUM_STEPS {
-//             current_step = 0
-//         }
-//         self.step = Some(current_step as u8);
-//
-//         self.delay.delay_us(100).await.expect("sleep finished");
-//         Ok(())
-//     }
-// }
+impl<
+        LinePin,
+        TDelay,
+        OutputPinError,
+        const STEP_BUS_WIDTH: usize,
+        const NUM_STEPS: usize,
+    > SetDelayAsync for Generic<LinePin, TDelay, STEP_BUS_WIDTH, NUM_STEPS>
+where
+    Self: DelayAsyncEnabled<TDelay>,
+    LinePin: OutputPin<Error = OutputPinError>,
+    OutputPinError: Debug,
+    TDelay: DelayUs,
+{
+    type AsyncEnabled<Delay: DelayUs> = Self;
+
+    fn set_delay<Delay: DelayUs>(
+        self,
+        delay: TDelay,
+    ) -> Self::AsyncEnabled<Delay> {
+        Self {
+            pins: self.pins,
+            steps: self.steps,
+            step: self.step,
+            direction: self.direction,
+            delay,
+        }
+    }
+}
+
+impl<
+        LinePin,
+        Delay,
+        OutputPinError,
+        Resources,
+        const STEP_BUS_WIDTH: usize,
+        const NUM_STEPS: usize,
+    > StepAsync<Resources, Delay, STEP_BUS_WIDTH>
+    for Generic<LinePin, Delay, STEP_BUS_WIDTH, NUM_STEPS>
+where
+    Self: DelayAsyncEnabled<Delay>,
+    LinePin: OutputPin<Error = OutputPinError>,
+    OutputPinError: Debug,
+    Delay: DelayUs,
+    Generic<LinePin, Delay, STEP_BUS_WIDTH, NUM_STEPS>:
+        EnableStepControl<Resources, STEP_BUS_WIDTH>,
+{
+    type OutputFut<'r>
+    where
+        Self: 'r,
+    = ();
+    type Error = Infallible;
+
+    async fn step_async(self: &mut Self) -> Result<(), Self::Error> {
+        let mut current_step = self.step.unwrap_or_else(|| 0) as usize;
+
+        let firing_sequence =
+            self.steps.get(current_step).expect("Within index");
+
+        for i in 0..STEP_BUS_WIDTH {
+            let pin_idx = STEP_BUS_WIDTH - 1 - i;
+            // println!("i = {:?}; pin_idx = {}", i, pin_idx);
+            match self.pins[pin_idx] {
+                ref mut pin => {
+                    // println!("firing_sequence = {:?}; cond = {:?}", firing_sequence, (firing_sequence >> i) & 0x01  );
+                    (if (firing_sequence >> i) & 0x01 == 0x01 {
+                        pin.set_high()
+                    } else {
+                        pin.set_low()
+                    })
+                    .expect("it to work");
+                }
+            };
+        }
+
+        current_step += 1;
+        if current_step >= NUM_STEPS {
+            current_step = 0
+        }
+        self.step = Some(current_step as u8);
+
+        self.delay.delay_us(100).await.expect("sleep finished");
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod test {
