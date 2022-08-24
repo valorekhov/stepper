@@ -4,8 +4,8 @@ mod set_direction;
 mod set_step_mode;
 mod step;
 
-#[cfg(feature = "async")]
-mod stepper_async;
+// #[cfg(feature = "async")]
+// mod stepper_async;
 
 pub use self::{
     error::{Error, SignalError},
