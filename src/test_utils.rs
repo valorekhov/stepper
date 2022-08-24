@@ -6,8 +6,10 @@ use embedded_hal_async::delay::DelayUs;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
+#[cfg(feature = "async")]
 use core::time::Duration;
 
+#[cfg(feature = "async")]
 use tokio::time::{sleep, Sleep};
 
 pub(crate) struct SleepWrapper {
