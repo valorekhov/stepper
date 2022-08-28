@@ -76,17 +76,14 @@ where
 
         for i in 0..STEP_BUS_WIDTH {
             let pin_idx = STEP_BUS_WIDTH - 1 - i;
-            // println!("i = {:?}; pin_idx = {}", i, pin_idx);
-            match self.pins[pin_idx] {
-                ref mut pin => {
-                    // println!("firing_sequence = {:?}; cond = {:?}", firing_sequence, (firing_sequence >> i) & 0x01  );
-                    (if (firing_sequence >> i) & 0x01 == 0x01 {
-                        pin.set_high()
-                    } else {
-                        pin.set_low()
-                    })
-                    .expect("it to work");
-                }
+            let pin = &mut self.pins[pin_idx];
+            {
+                (if (firing_sequence >> i) & 0x01 == 0x01 {
+                    pin.set_high()
+                } else {
+                    pin.set_low()
+                })
+                .expect("it to work");
             };
         }
 
@@ -154,45 +151,32 @@ where
 
 #[cfg(test)]
 mod test {
+    use crate::drivers::generic::Generic;
+    use crate::stepper::asynch::Stepper;
+    use crate::test_utils::MockPin;
+    use crate::test_utils::SysClockTimer;
+    use crate::Direction;
 
     #[tokio::test]
     pub async fn test_stepping_async() {
-        // let _dir = Pin::<u16>;
-        //
-        // let steps = [0b01 as u8, 0b10 as u8];
-        //
-        // {
-        //     let mut pin1 = MockPin::new();
-        //     let mut pin2 = MockPin::new();
-        //
-        //     pin1.expect_set_low().return_once(|| Ok(()));
-        //     pin2.expect_set_high().return_once(|| Ok(()));
-        //
-        //     // Enable step control
-        //     let mut stepper = Stepper::from_driver(Generic::new([&mut pin1, &mut pin2], steps)).enable_step_control_async((), DelayUsPosix{});
-        //     //// Enable motion control using the software fallback
-        //     //.enable_motion_control((timer, profile, crate::motion_control::TimeConversionError::DelayToTicks));
-        //
-        //     stepper.step_async().await.unwrap();
-        //     assert_eq!(stepper.driver().step, Some(1));
-        //     pin1.checkpoint();
-        //     pin2.checkpoint();
-        // }
-        //
-        // {
-        //     let mut pin1 = MockPin::new();
-        //     let mut pin2 = MockPin::new();
-        //
-        //     pin1.expect_set_high().return_once(|| Ok(()));
-        //     pin2.expect_set_low().return_once(|| Ok(()));
-        //
-        //     let mut stepper = Stepper::from_driver(Generic::new([&mut pin1, &mut pin2], steps)).enable_step_control_async((), DelayUsPosix{});
-        //
-        //     stepper.driver().set_step(1).expect("correct number of steps");
-        //     stepper.step_async().await.unwrap();
-        //     assert_eq!(stepper.driver().step, Some(0));
-        //     pin1.checkpoint();
-        //     pin2.checkpoint();
-        // }
+        let mut pin1 = MockPin::new();
+        let mut pin2 = MockPin::new();
+
+        pin1.expect_set_low().return_once(|| Ok(()));
+        pin2.expect_set_high().return_once(|| Ok(()));
+
+        let mut timer = SysClockTimer::<1000_u32>::new();
+
+        let mut stepper = Stepper::from_driver(Generic::new(
+            [&mut pin1, &mut pin2],
+            [0b01_u8, 0b10_u8],
+        ))
+        .enable_direction_control((), Direction::Forward, &mut timer)
+        .expect("direction setting failed")
+        .enable_step_control(());
+
+        let res = stepper.step(&mut timer).await;
+        res.unwrap();
+        assert_eq!(stepper.driver().step, Some(1));
     }
 }
