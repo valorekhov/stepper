@@ -1,5 +1,6 @@
 use core::task::Poll;
 
+use crate::stepper::legacy_future::LegacyFuture;
 use embedded_hal::digital::blocking::OutputPin;
 use embedded_hal::digital::ErrorType;
 use fugit::TimerDurationU32 as TimerDuration;
@@ -49,6 +50,30 @@ where
         }
     }
 
+    /// Drop the future and release the resources that were moved into it
+    pub fn release(self) -> (Driver, Timer) {
+        (self.driver, self.timer)
+    }
+}
+
+impl<Driver, Timer, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>
+    LegacyFuture for StepFuture<Driver, Timer, TIMER_HZ, STEP_BUS_WIDTH>
+where
+    Driver: Step<STEP_BUS_WIDTH>,
+    Timer: TimerTrait<TIMER_HZ>,
+{
+    type DriverError = Driver::Error;
+    type TimerError = Timer::Error;
+
+    type FutureOutput = Result<
+        (),
+        SignalError<
+            Driver::Error,
+            <Driver::StepPin as ErrorType>::Error,
+            Timer::Error,
+        >,
+    >;
+
     /// Poll the future
     ///
     /// The future must be polled for the operation to make progress. The
@@ -60,25 +85,14 @@ where
     /// calling it at a high frequency (see [`Self::wait`]) until the operation
     /// completes, or set up an interrupt that fires once the timer finishes
     /// counting down, and call this method again once it does.
-    pub fn poll(
-        &mut self,
-    ) -> Poll<
-        Result<
-            (),
-            SignalError<
-                Driver::Error,
-                <Driver::StepPin as ErrorType>::Error,
-                Timer::Error,
-            >,
-        >,
-    > {
+    fn poll(&mut self) -> Poll<Self::FutureOutput> {
         match self.state {
             State::Initial => {
                 // Start step action
                 let mut pin_actions = self
                     .driver
                     .step_leading()
-                    .map_err(|err| SignalError::PinUnavailable(err))?;
+                    .map_err(SignalError::PinUnavailable)?;
 
                 for pin_action in pin_actions.iter_mut() {
                     let action = match pin_action {
@@ -87,20 +101,15 @@ where
                         OutputPinAction::Set(pin, state) => Some((pin, *state)),
                         OutputPinAction::None => None,
                     };
-                    match action {
-                        Some((pin, state)) => pin
-                            .set_state(state)
-                            .map_err(|err| SignalError::Pin(err))?,
-                        _ => {}
+                    if let Some((pin, state)) = action {
+                        pin.set_state(state).map_err(SignalError::Pin)?
                     }
                 }
 
                 let ticks: TimerDuration<TIMER_HZ> =
                     Driver::PULSE_LENGTH.convert();
 
-                self.timer
-                    .start(ticks)
-                    .map_err(|err| SignalError::Timer(err))?;
+                self.timer.start(ticks).map_err(SignalError::Timer)?;
 
                 self.state = State::PulseStarted;
                 Poll::Pending
@@ -112,7 +121,7 @@ where
                         let mut pin_actions = self
                             .driver
                             .step_trailing()
-                            .map_err(|err| SignalError::PinUnavailable(err))?;
+                            .map_err(SignalError::PinUnavailable)?;
 
                         for pin_action in pin_actions.iter_mut() {
                             let action = match pin_action {
@@ -123,11 +132,9 @@ where
                                 }
                                 OutputPinAction::None => None,
                             };
-                            match action {
-                                Some((pin, state)) => pin
-                                    .set_state(state)
-                                    .map_err(|err| SignalError::Pin(err))?,
-                                _ => {}
+                            if let Some((pin, state)) = action {
+                                pin.set_state(state)
+                                    .map_err(SignalError::Pin)?
                             }
                         }
 
@@ -144,32 +151,6 @@ where
             State::Finished => Poll::Ready(Ok(())),
         }
     }
-
-    /// Wait until the operation completes
-    ///
-    /// This method will call [`Self::poll`] in a busy loop until the operation
-    /// has finished.
-    pub fn wait(
-        &mut self,
-    ) -> Result<
-        (),
-        SignalError<
-            Driver::Error,
-            <Driver::StepPin as ErrorType>::Error,
-            Timer::Error,
-        >,
-    > {
-        loop {
-            if let Poll::Ready(result) = self.poll() {
-                return result;
-            }
-        }
-    }
-
-    /// Drop the future and release the resources that were moved into it
-    pub fn release(self) -> (Driver, Timer) {
-        (self.driver, self.timer)
-    }
 }
 
 enum State {
@@ -177,60 +158,3 @@ enum State {
     PulseStarted,
     Finished,
 }
-
-// #[cfg(feature = "async")]
-// use embedded_hal_async::delay::DelayUs;
-//
-// /// Rotates the motor one step in the given direction
-// ///
-// /// Steps the motor one step in the direction that was previously set,
-// /// according to the current entry in the pin firing configuration. To achieve a specific
-// /// speed, the user must call this method at an appropriate frequency.
-// ///
-// /// You might need to call [`Stepper::enable_step_control`] to make this
-// /// method available.
-// #[cfg(feature = "async")]
-// pub async fn step_async<Driver, Delay, const TIMER_HZ: u32, const BUS_WIDTH: usize>(
-//     driver: &mut Driver,
-//     delay: &mut Delay,
-// ) -> Result<
-//     (),
-//     SignalError<
-//         <Driver::StepPin as Step<BUS_WIDTH>>::Error,
-//         <Driver::StepPin as ErrorType>::Error,
-//         Delay::Error,
-//     >,
-// >
-//     where
-//         Driver: Step<BUS_WIDTH> + OutputPin,
-//         Delay: DelayUs,
-//         <Driver as Step<BUS_WIDTH>>::StepPin: Step<BUS_WIDTH>,
-//         SignalError<
-//             <Driver::StepPin as Step<BUS_WIDTH>>::Error,
-//             <Driver::StepPin as ErrorType>::Error,
-//             Delay::Error,
-//         >: From< SignalError<
-//             <Driver as Step<BUS_WIDTH>>::Error,
-//             <Driver::StepPin as ErrorType>::Error,
-//             Delay::Error,
-//         >>
-//
-// {
-//     driver
-//         .step()
-//         .map_err(|err| SignalError::PinUnavailable(err))?
-//         .set_high()
-//         .map_err(|err| SignalError::Pin(err))?;
-//
-//     delay.delay_us(Driver::PULSE_LENGTH.to_micros())
-//         .await
-//         .map_err(|err| SignalError::Timer(err))?;
-//
-//     driver
-//         .step()
-//         .map_err(|err| SignalError::PinUnavailable(err))?
-//         .set_low()
-//         .map_err(|err| SignalError::Pin(err))?;
-//
-//     Ok(())
-// }

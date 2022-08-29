@@ -1,11 +1,18 @@
+use crate::stepper::legacy_future::LegacyFuture;
 use core::{convert::Infallible, task::Poll};
-
 use fugit::TimerDurationU32 as TimerDuration;
 use fugit_timer::Timer as TimerTrait;
 
 use crate::traits::SetStepMode;
 
 use super::SignalError;
+
+enum State {
+    Initial,
+    ApplyingConfig,
+    EnablingDriver,
+    Finished,
+}
 
 /// The "future" returned by [`Stepper::set_step_mode`]
 ///
@@ -48,6 +55,30 @@ where
         }
     }
 
+    /// Drop the future and release the resources that were moved into it
+    pub fn release(self) -> (Driver, Timer) {
+        (self.driver, self.timer)
+    }
+}
+
+impl<Driver, Timer, const TIMER_HZ: u32> LegacyFuture
+    for SetStepModeFuture<Driver, Timer, TIMER_HZ>
+where
+    Driver: SetStepMode,
+    Timer: TimerTrait<TIMER_HZ>,
+{
+    type DriverError = Driver::Error;
+    type TimerError = Timer::Error;
+
+    type FutureOutput = Result<
+        (),
+        SignalError<
+            Infallible, // only applies to `SetDirection`, `Step`
+            Self::DriverError,
+            Self::TimerError,
+        >,
+    >;
+
     /// Poll the future
     ///
     /// The future must be polled for the operation to make progress. The
@@ -59,18 +90,7 @@ where
     /// calling it at a high frequency (see [`Self::wait`]) until the operation
     /// completes, or set up an interrupt that fires once the timer finishes
     /// counting down, and call this method again once it does.
-    pub fn poll(
-        &mut self,
-    ) -> Poll<
-        Result<
-            (),
-            SignalError<
-                Infallible, // only applies to `SetDirection`, `Step`
-                Driver::Error,
-                Timer::Error,
-            >,
-        >,
-    > {
+    fn poll(&mut self) -> Poll<Self::FutureOutput> {
         match self.state {
             State::Initial => {
                 self.driver
@@ -124,37 +144,25 @@ where
             State::Finished => Poll::Ready(Ok(())),
         }
     }
-
-    /// Wait until the operation completes
-    ///
-    /// This method will call [`Self::poll`] in a busy loop until the operation
-    /// has finished.
-    pub fn wait(
-        &mut self,
-    ) -> Result<
-        (),
-        SignalError<
-            Infallible, // only applies to `SetDirection`, `Step`
-            Driver::Error,
-            Timer::Error,
-        >,
-    > {
-        loop {
-            if let Poll::Ready(result) = self.poll() {
-                return result;
-            }
-        }
-    }
-
-    /// Drop the future and release the resources that were moved into it
-    pub fn release(self) -> (Driver, Timer) {
-        (self.driver, self.timer)
-    }
 }
 
-enum State {
-    Initial,
-    ApplyingConfig,
-    EnablingDriver,
-    Finished,
-}
+// impl<Driver, Timer, const TIMER_HZ: u32> Future
+//     for SetStepModeFuture<Driver, Timer, TIMER_HZ>
+// where
+//     Driver: SetStepMode,
+//     Timer: TimerTrait<TIMER_HZ>,
+// {
+//     type Output = Result<
+//         (),
+//         SignalError<
+//             Infallible, // only applies to `SetDirection`, `Step`
+//             Driver::Error,
+//             Timer::Error,
+//         >,
+//     >;
+//
+//     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+//         let this = self.project().as_mut();
+//         this.poll()
+//     }
+// }

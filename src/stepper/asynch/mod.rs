@@ -1,27 +1,20 @@
-#[cfg(feature = "async")]
-pub(crate) mod asynch;
-mod error;
-pub(crate) mod legacy_future;
-mod move_to;
-mod set_direction;
-pub(crate) mod set_step_mode;
-mod step;
+//mod step;
+mod stepper_async;
 
-pub use self::{
+pub use crate::stepper::{
     error::{Error, SignalError},
     move_to::MoveToFuture,
     set_direction::SetDirectionFuture,
     step::StepFuture,
 };
-
 use core::convert::Infallible;
-
 use embedded_hal::digital::ErrorType;
 use fugit::NanosDurationU32 as Nanoseconds;
 use fugit_timer::Timer as TimerTrait;
-pub use set_step_mode::SetStepModeFuture;
 
 use crate::stepper::legacy_future::LegacyFuture;
+use crate::stepper::legacy_future::WrappedLegacyFuture;
+pub use crate::stepper::set_step_mode::SetStepModeFuture;
 use crate::{
     traits::{
         EnableDirectionControl, EnableMotionControl, EnableStepControl,
@@ -31,7 +24,7 @@ use crate::{
     Direction,
 };
 
-/// Unified stepper motor interface
+/// Unified stepper motor interface with async methods
 ///
 /// Wraps a driver that interfaces with the motor-controlling hardware and
 /// abstracts over it, providing an interface that works the same, no matter
@@ -103,6 +96,7 @@ use crate::{
 /// Some of this struct's methods take a timer argument. This is expected to be
 /// an implementation of [`fugit_timer::Timer`].
 ///
+
 pub struct Stepper<Driver> {
     driver: Driver,
 }
@@ -121,13 +115,13 @@ impl<Driver> Stepper<Driver> {
         &mut self.driver
     }
 
-    /// Access a mutable reference to the wrapped driver
-    ///
-    /// Can be used to access driver-specific functionality that can't be
-    /// provided by `Stepper`'s abstract interface.
-    pub fn driver_mut(&mut self) -> &mut Driver {
-        &mut self.driver
-    }
+    // /// Access a mutable reference to the wrapped driver
+    // ///
+    // /// Can be used to access driver-specific functionality that can't be
+    // /// provided by `Stepper`'s abstract interface.
+    // pub fn driver_mut(&mut self) -> &mut Driver {
+    //     &mut self.driver
+    // }
 
     /// Release the wrapped driver
     ///
@@ -150,11 +144,11 @@ impl<Driver> Stepper<Driver> {
     /// This method is only available, if the driver supports enabling step mode
     /// control. It might no longer be available, once step mode control has
     /// been enabled.
-    pub fn enable_step_mode_control<Resources, Timer, const TIMER_HZ: u32>(
+    pub fn enable_step_mode_control<'a, Resources, Timer, const TIMER_HZ: u32>(
         self,
         res: Resources,
         initial: <Driver::WithStepModeControl as SetStepMode>::StepMode,
-        timer: &mut Timer,
+        timer: &'a mut Timer,
     ) -> Result<
         Stepper<Driver::WithStepModeControl>,
         SignalError<
@@ -164,13 +158,20 @@ impl<Driver> Stepper<Driver> {
         >,
     >
     where
-        Driver: EnableStepModeControl<Resources>,
-        Timer: TimerTrait<TIMER_HZ>,
+        Driver: EnableStepModeControl<Resources> + 'a,
+        Timer: TimerTrait<TIMER_HZ> + 'a,
+        <Driver as EnableStepModeControl<Resources>>::WithStepModeControl: 'a,
     {
         let mut self_ = Stepper {
             driver: self.driver.enable_step_mode_control(res),
         };
-        self_.set_step_mode(initial, timer).wait()?;
+
+        // TODO: this would need to be refactored to return the future returning
+        // self_; Except this runs into lifetime issues
+        self_
+            .set_step_mode(initial, timer)
+            .wrapped_future()
+            .wait()?;
 
         Ok(self_)
     }
@@ -178,6 +179,7 @@ impl<Driver> Stepper<Driver> {
     /// Sets the microstepping mode
     ///
     /// This method is only available, if the wrapped driver supports
+    ///
     /// microstepping, and supports setting the step mode through software. Some
     /// hardware might not support microstepping at all, or only allow setting
     /// the step mode by changing physical switches.
@@ -188,16 +190,20 @@ impl<Driver> Stepper<Driver> {
         &'r mut self,
         step_mode: Driver::StepMode,
         timer: &'r mut Timer,
-    ) -> SetStepModeFuture<RefMut<'r, Driver>, RefMut<'r, Timer>, TIMER_HZ>
+    ) -> WrappedLegacyFuture<
+        Driver,
+        Timer,
+        SetStepModeFuture<RefMut<'r, Driver>, RefMut<'r, Timer>, TIMER_HZ>,
+    >
     where
         Driver: SetStepMode,
         Timer: TimerTrait<TIMER_HZ>,
     {
-        SetStepModeFuture::new(
+        WrappedLegacyFuture::new(SetStepModeFuture::new(
             step_mode,
             RefMut(&mut self.driver),
             RefMut(timer),
-        )
+        ))
     }
 
     /// Enable direction control
@@ -234,7 +240,10 @@ impl<Driver> Stepper<Driver> {
         let mut self_ = Stepper {
             driver: self.driver.enable_direction_control(res),
         };
-        self_.set_direction(initial, timer).wait()?;
+        self_
+            .set_direction(initial, timer)
+            .wrapped_future()
+            .wait()?;
 
         Ok(self_)
     }
@@ -243,20 +252,25 @@ impl<Driver> Stepper<Driver> {
     ///
     /// You might need to call [`Stepper::enable_direction_control`] to make
     /// this method available.
+
     pub fn set_direction<'r, Timer, const TIMER_HZ: u32>(
         &'r mut self,
         direction: Direction,
         timer: &'r mut Timer,
-    ) -> SetDirectionFuture<RefMut<'r, Driver>, RefMut<'r, Timer>, TIMER_HZ>
+    ) -> WrappedLegacyFuture<
+        Driver,
+        Timer,
+        SetDirectionFuture<RefMut<'r, Driver>, RefMut<'r, Timer>, TIMER_HZ>,
+    >
     where
         Driver: SetDirection,
         Timer: TimerTrait<TIMER_HZ>,
     {
-        SetDirectionFuture::new(
+        WrappedLegacyFuture::new(SetDirectionFuture::new(
             direction,
             RefMut(&mut self.driver),
             RefMut(timer),
-        )
+        ))
     }
 
     /// Enable step control
@@ -273,63 +287,61 @@ impl<Driver> Stepper<Driver> {
     /// This method is only available, if the driver/controller supports
     /// enabling step control. It might no longer be available, once step
     /// control has been enabled.
-    pub fn enable_step_control<Resources, const BUS_WIDTH: usize>(
+    pub fn enable_step_control<Resources, const STEP_BUS_WIDTH: usize>(
         self,
         res: Resources,
     ) -> Stepper<Driver::WithStepControl>
     where
-        Driver: EnableStepControl<Resources, BUS_WIDTH>,
+        Driver: EnableStepControl<Resources, STEP_BUS_WIDTH>,
     {
         Stepper {
             driver: self.driver.enable_step_control(res),
         }
     }
 
-    /// Rotates the motor one (micro-)step in the given direction
+    /// Rotates the motor one step in the given direction
     ///
     /// Steps the motor one step in the direction that was previously set,
-    /// according to current microstepping configuration. To achieve a specific
+    /// according to the current entry in the pin firing configuration. To achieve a specific
     /// speed, the user must call this method at an appropriate frequency.
     ///
     /// You might need to call [`Stepper::enable_step_control`] to make this
     /// method available.
+
     pub fn step<'r, Timer, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>(
         &'r mut self,
         timer: &'r mut Timer,
-    ) -> StepFuture<
-        RefMut<'r, Driver>,
-        RefMut<'r, Timer>,
-        TIMER_HZ,
-        STEP_BUS_WIDTH,
+    ) -> WrappedLegacyFuture<
+        Driver,
+        Timer,
+        StepFuture<
+            RefMut<'r, Driver>,
+            RefMut<'r, Timer>,
+            TIMER_HZ,
+            STEP_BUS_WIDTH,
+        >,
     >
     where
         Driver: Step<STEP_BUS_WIDTH>,
         Timer: TimerTrait<TIMER_HZ>,
     {
-        StepFuture::new(RefMut(&mut self.driver), RefMut(timer))
+        WrappedLegacyFuture::new(StepFuture::new(
+            RefMut(&mut self.driver),
+            RefMut(timer),
+        ))
     }
 
-    /// Releases holding current on the motor coils
-    pub fn release_coils<
-        'r,
-        Timer,
-        const TIMER_HZ: u32,
-        const STEP_BUS_WIDTH: usize,
-    >(
-        &'r mut self,
-        timer: &'r mut Timer,
-    ) -> StepFuture<
-        RefMut<'r, Driver>,
-        RefMut<'r, Timer>,
-        TIMER_HZ,
-        STEP_BUS_WIDTH,
-    >
-    where
-        Driver: Step<STEP_BUS_WIDTH>,
-        Timer: TimerTrait<TIMER_HZ>,
-    {
-        StepFuture::new(RefMut(&mut self.driver), RefMut(timer))
-    }
+    // TODO: Uncomment the below once the drivers implement ASYNC traits
+    // pub fn step<'r, Delay, Resources, const STEP_BUS_WIDTH: usize>(
+    //     &'r mut self,
+    //     delay: &'r mut Delay,
+    // ) -> <Driver as StepAsync<Resources, Delay, STEP_BUS_WIDTH>>::OutputFut<'r>
+    // where
+    //     Driver: StepAsync<Resources, Delay, STEP_BUS_WIDTH>,
+    //     Delay: DelayUs,
+    // {
+    //     self.driver.step_async(delay)
+    // }
 
     /// Returns the step pulse length of the wrapped driver/controller
     ///
@@ -396,15 +408,19 @@ impl<Driver> Stepper<Driver> {
     ///
     /// You might need to call [`Stepper::enable_motion_control`] to make this
     /// method available.
-    pub fn move_to_position<'r>(
-        &'r mut self,
+    pub fn move_to_position(
+        &mut self,
         max_velocity: Driver::Velocity,
         target_step: i32,
-    ) -> MoveToFuture<RefMut<'r, Driver>>
+    ) -> WrappedLegacyFuture<Driver, (), MoveToFuture<RefMut<Driver>>>
     where
         Driver: MotionControl,
     {
-        MoveToFuture::new(RefMut(&mut self.driver), max_velocity, target_step)
+        WrappedLegacyFuture::new(MoveToFuture::new(
+            RefMut(&mut self.driver),
+            max_velocity,
+            target_step,
+        ))
     }
 
     /// Reset the position to the given value

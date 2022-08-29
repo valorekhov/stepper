@@ -132,13 +132,12 @@ pub trait Step<const STEP_BUS_WIDTH: usize> {
     // The following compiles on nightly allowing to refer as Self::BUS_WIDTH,
     // however, on stable I could only make it work as a trait const generic, resulting in
     // sprawl of STEP_BUS_WIDTH all over the code base
-
     // const BUS_WIDTH: usize = 1;
 
-    /// The type of the STEP pin
+    /// The type of the STEP pin(s)
     type StepPin: OutputPin;
 
-    /// The error that can occur while accessing the STEP pin
+    /// The error that can occur while accessing the STEP pin(s)
     type Error;
 
     /// Provides access to the STEP pins and associated Low/High state for the leading edge
@@ -151,6 +150,26 @@ pub trait Step<const STEP_BUS_WIDTH: usize> {
 
     /// Provides access to the STEP pins and associated Low/High state for the leading edge
     fn step_trailing(
+        &mut self,
+    ) -> Result<
+        [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
+        Self::Error,
+    >;
+}
+
+/// Implemented by drivers that support controlling the STEP signal
+pub trait ReleaseCoils<const STEP_BUS_WIDTH: usize> {
+    /// The minimum length of a STEP pulse
+    const PULSE_LENGTH: Nanoseconds;
+
+    /// The type of the STEP pin
+    type StepPin: OutputPin;
+
+    /// The error that can occur while accessing the STEP pin(s)
+    type Error;
+
+    /// Provides access to the STEP pins and associated Low/High state for the leading edge
+    fn release_coils(
         &mut self,
     ) -> Result<
         [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],

@@ -18,6 +18,7 @@ use embedded_hal::digital::blocking::OutputPin;
 use embedded_hal::digital::PinState::{High, Low};
 use fugit::NanosDurationU32 as Nanoseconds;
 
+use crate::traits::ReleaseCoils;
 use crate::{
     traits::{
         EnableDirectionControl, EnableStepControl, OutputPinAction,
@@ -149,7 +150,7 @@ where
     /// NOT USED
     const PULSE_LENGTH: Nanoseconds = Nanoseconds::from_ticks(0);
 
-    /// NOT USED
+    /// Type of the step pin(s)
     type StepPin = LinePin;
     type Error = GenericStepError;
 
@@ -159,21 +160,17 @@ where
         [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
         Self::Error,
     > {
-        if self.direction.is_none() {
-            return Err(GenericStepError::MustCallEnableDirection);
-        }
+        let direction = self.direction.unwrap_or(Direction::Forward);
 
-        let direction = self.direction.unwrap();
-
-        let mut current_step = self.step.unwrap_or_else(|| 0) as usize;
+        let mut current_step = self.step.unwrap_or(0) as usize;
 
         // Retain current firing_seq here before current step is incremented
         let firing_sequence =
             *self.steps.get(current_step).expect("Within index");
 
         current_step = match current_step.checked_add_signed(match direction {
-            Direction::Forward => 1 as isize,
-            Direction::Backward => -1 as isize,
+            Direction::Forward => 1_isize,
+            Direction::Backward => -1_isize,
         }) {
             Some(step) => {
                 if direction == Direction::Forward && step >= NUM_STEPS {
@@ -193,25 +190,15 @@ where
 
         self.step = Some(current_step as u8);
 
-        let mut data: [MaybeUninit<OutputPinAction<&mut Self::StepPin>>;
-            STEP_BUS_WIDTH] = unsafe { MaybeUninit::uninit().assume_init() };
+        let x = move |i, pin| {
+            if firing_sequence >> (STEP_BUS_WIDTH - 1 - i) & 0x01 == 0x01 {
+                OutputPinAction::Set(pin, High)
+            } else {
+                OutputPinAction::Set(pin, Low)
+            }
+        };
 
-        for (i, pin) in self.pins.iter_mut().enumerate() {
-            let bit_idx = STEP_BUS_WIDTH - 1 - i;
-
-            data[i] = MaybeUninit::new(
-                if (firing_sequence >> bit_idx) & 0x01 == 0x01 {
-                    OutputPinAction::Set(pin, High)
-                } else {
-                    OutputPinAction::Set(pin, Low)
-                },
-            )
-        }
-
-        let ptr = &mut data as *mut _
-            as *mut [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH];
-        let res = unsafe { ptr.read() };
-        mem::forget(data);
+        let res = self.create_step_actions(x);
 
         Ok(res)
     }
@@ -222,21 +209,66 @@ where
         [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
         Self::Error,
     > {
-        // Could've done `return [OutputPinAction::None; STEP_BUS_WIDTH]` but don't want to take an assumption on LinePin implementing Copy
+        let res = self.create_step_actions(|_, _| OutputPinAction::None);
+        Ok(res)
+    }
+}
 
-        let mut data: [MaybeUninit<OutputPinAction<&mut Self::StepPin>>;
+impl<
+        LinePin,
+        OutputPinError,
+        const STEP_BUS_WIDTH: usize,
+        const NUM_STEPS: usize,
+    > Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>
+where
+    LinePin: OutputPin<Error = OutputPinError>,
+    OutputPinError: Debug,
+{
+    fn create_step_actions<'a, F>(
+        &'a mut self,
+        val_func: F,
+    ) -> [OutputPinAction<&'a mut LinePin>; STEP_BUS_WIDTH]
+    where
+        F: Fn(usize, &'a mut LinePin) -> OutputPinAction<&'a mut LinePin>,
+    {
+        // Could've done `return [OutputPinAction::None; STEP_BUS_WIDTH]` but don't want to take an assumption on LinePin implementing Copy
+        let mut data: [MaybeUninit<OutputPinAction<&mut LinePin>>;
             STEP_BUS_WIDTH] = unsafe { MaybeUninit::uninit().assume_init() };
 
-        for (i, _) in self.pins.iter_mut().enumerate() {
-            data[i] = MaybeUninit::new(OutputPinAction::None)
+        for (i, pin) in self.pins.iter_mut().enumerate() {
+            data[i] = MaybeUninit::new(val_func(i, pin))
         }
 
         let ptr = &mut data as *mut _
-            as *mut [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH];
+            as *mut [OutputPinAction<&mut LinePin>; STEP_BUS_WIDTH];
         let res = unsafe { ptr.read() };
         mem::forget(data);
+        res
+    }
+}
 
-        Ok(res)
+impl<
+        LinePin,
+        OutputPinError,
+        const STEP_BUS_WIDTH: usize,
+        const NUM_STEPS: usize,
+    > ReleaseCoils<STEP_BUS_WIDTH>
+    for Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>
+where
+    LinePin: OutputPin<Error = OutputPinError>,
+    OutputPinError: Debug,
+{
+    const PULSE_LENGTH: Nanoseconds = Nanoseconds::from_ticks(0);
+    type StepPin = LinePin;
+    type Error = LinePin::Error;
+
+    fn release_coils(
+        &mut self,
+    ) -> Result<
+        [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
+        Self::Error,
+    > {
+        Ok(self.create_step_actions(|_, pin| OutputPinAction::Set(pin, Low)))
     }
 }
 
@@ -259,28 +291,17 @@ where
 #[cfg(test)]
 mod test {
     use crate::drivers::generic::{Generic, GenericStepError};
+    use crate::legacy_future::LegacyFuture;
+    use crate::test_utils::OkTimer;
     use crate::traits::Step;
-    use crate::{motion_control, Direction, Stepper};
+    use crate::{motion_control, test_utils::MockPin, Direction, Stepper};
     use core::convert::Infallible;
     use core::task::Poll;
     use embedded_hal::digital::blocking::OutputPin;
-    use embedded_hal::digital::ErrorType;
     use fixed::traits::Fixed;
     use fugit::{TimerDurationU32, TimerInstantU32};
     use mockall::mock;
     use nb::Error::WouldBlock;
-
-    mock! {
-        Pin{}
-        impl ErrorType for Pin {
-            type Error = Infallible;
-        }
-
-        impl OutputPin for Pin {
-            fn set_low(&mut self) -> Result<(), <Self as ErrorType>::Error>;
-            fn set_high(&mut self) -> Result<(), <Self as ErrorType>::Error>;
-       }
-    }
 
     type FixedI64U32 = fixed::FixedI64<typenum::U32>;
     mock! {
@@ -307,35 +328,6 @@ mod test {
         }
     }
 
-    struct OkTimer<const TIMER_HZ: u32> {}
-    impl<const TIMER_HZ: u32> OkTimer<TIMER_HZ> {
-        pub fn new() -> Self {
-            Self {}
-        }
-    }
-    impl<const TIMER_HZ: u32> fugit_timer::Timer<TIMER_HZ> for OkTimer<TIMER_HZ> {
-        type Error = ();
-
-        fn now(&mut self) -> TimerInstantU32<TIMER_HZ> {
-            todo!()
-        }
-
-        fn start(
-            &mut self,
-            _duration: TimerDurationU32<TIMER_HZ>,
-        ) -> Result<(), Self::Error> {
-            Ok(())
-        }
-
-        fn cancel(&mut self) -> Result<(), Self::Error> {
-            todo!()
-        }
-
-        fn wait(&mut self) -> nb::Result<(), Self::Error> {
-            Ok(())
-        }
-    }
-
     pub struct DelayToTicks;
     impl<Delay: Fixed, const TIMER_HZ: u32>
         motion_control::DelayToTicks<Delay, TIMER_HZ> for DelayToTicks
@@ -356,7 +348,7 @@ mod test {
 
     #[test]
     pub fn test_stepping() {
-        let steps = [0b01 as u8, 0b10 as u8];
+        let steps = [0b01_u8, 0b10_u8];
 
         {
             let mut pin1 = MockPin::new();
@@ -478,7 +470,7 @@ mod test {
 
     #[test]
     pub fn test_software_motion_control() {
-        let steps = [0 as u8, 1 as u8];
+        let steps = [0_u8, 1_u8];
 
         let mut pin1 = MockPin::new();
 
@@ -532,14 +524,43 @@ mod test {
         }
     }
 
+    // #[test]
+    // pub fn require_enabling_dir_control_before_stepping() {
+    //     let mut pin = MockPin::new();
+    //     let mut driver = Generic::new([&mut pin], [0, 1]);
+    //     match driver.step_leading() {
+    //         Err(e) => assert_eq!(e, GenericStepError::MustCallEnableDirection),
+    //         _ => assert!(false),
+    //     }
+    // }
+
     #[test]
-    pub fn require_enabling_dir_control_before_stepping() {
+    pub fn release_coils() {
         let mut pin = MockPin::new();
-        let mut driver = Generic::new([&mut pin], [0, 1]);
-        match driver.step_leading() {
-            Err(e) => assert_eq!(e, GenericStepError::MustCallEnableDirection),
-            _ => assert!(false),
-        }
+
+        // Steps have been programmed to only send HIGH
+        pin.expect_set_high().times(1).returning(|| Ok(()));
+
+        // Low signal is expected out of the release calls
+        pin.expect_set_low().times(2).returning(|| Ok(()));
+
+        let driver = Generic::new([&mut pin], [1, 1]);
+
+        let mut stepper = Stepper::from_driver(driver).enable_step_control(());
+        let timer = &mut OkTimer::<1>::new();
+        stepper.step(timer).wait().expect("stepping failed");
+        assert_eq!(stepper.driver().step, Some(1));
+        stepper
+            .release_coils(timer)
+            .wait()
+            .expect("Coil release did not work");
+        // Expecting step position not to change
+        assert_eq!(stepper.driver().step, Some(1));
+        stepper
+            .release_coils(timer)
+            .wait()
+            .expect("Coil release did not work");
+        assert_eq!(stepper.driver().step, Some(1));
     }
 
     #[test]

@@ -5,6 +5,7 @@ use embedded_hal::digital::ErrorType;
 use fugit::TimerDurationU32 as TimerDuration;
 use fugit_timer::Timer as TimerTrait;
 
+use crate::legacy_future::LegacyFuture;
 use crate::traits::OutputPinAction;
 use crate::{traits::SetDirection, Direction};
 
@@ -47,6 +48,30 @@ where
         }
     }
 
+    /// Drop the future and release the resources that were moved into it
+    pub fn release(self) -> (Driver, Timer) {
+        (self.driver, self.timer)
+    }
+}
+
+impl<Driver, Timer, const TIMER_HZ: u32> LegacyFuture
+    for SetDirectionFuture<Driver, Timer, TIMER_HZ>
+where
+    Driver: SetDirection,
+    Timer: TimerTrait<TIMER_HZ>,
+{
+    type DriverError = <Driver::Dir as ErrorType>::Error;
+    type TimerError = Timer::Error;
+
+    type FutureOutput = Result<
+        (),
+        SignalError<
+            Driver::Error,
+            <Driver::Dir as ErrorType>::Error,
+            Timer::Error,
+        >,
+    >;
+
     /// Poll the future
     ///
     /// The future must be polled for the operation to make progress. The
@@ -58,18 +83,7 @@ where
     /// calling it at a high frequency (see [`Self::wait`]) until the operation
     /// completes, or set up an interrupt that fires once the timer finishes
     /// counting down, and call this method again once it does.
-    pub fn poll(
-        &mut self,
-    ) -> Poll<
-        Result<
-            (),
-            SignalError<
-                Driver::Error,
-                <Driver::Dir as ErrorType>::Error,
-                Timer::Error,
-            >,
-        >,
-    > {
+    fn poll(&mut self) -> Poll<Self::FutureOutput> {
         match self.state {
             State::Initial => {
                 let action = self
@@ -106,32 +120,6 @@ where
             },
             State::Finished => Poll::Ready(Ok(())),
         }
-    }
-
-    /// Wait until the operation completes
-    ///
-    /// This method will call [`Self::poll`] in a busy loop until the operation
-    /// has finished.
-    pub fn wait(
-        &mut self,
-    ) -> Result<
-        (),
-        SignalError<
-            Driver::Error,
-            <Driver::Dir as ErrorType>::Error,
-            Timer::Error,
-        >,
-    > {
-        loop {
-            if let Poll::Ready(result) = self.poll() {
-                return result;
-            }
-        }
-    }
-
-    /// Drop the future and release the resources that were moved into it
-    pub fn release(self) -> (Driver, Timer) {
-        (self.driver, self.timer)
     }
 }
 

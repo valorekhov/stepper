@@ -19,13 +19,14 @@ use fugit_timer::Timer as TimerTrait;
 use ramp_maker::MotionProfile;
 use replace_with::replace_with_and_return;
 
+use crate::stepper::set_step_mode::SetStepModeFuture;
 use crate::traits::OutputPinAction;
 use crate::{
     traits::{
         EnableMotionControl, MotionControl, SetDirection, SetStepMode, Step,
     },
     util::ref_mut::RefMut,
-    Direction, SetDirectionFuture, SetStepModeFuture, StepFuture,
+    Direction, SetDirectionFuture, StepFuture,
 };
 
 use self::state::State;

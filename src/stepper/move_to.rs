@@ -1,3 +1,4 @@
+use crate::legacy_future::LegacyFuture;
 use core::task::Poll;
 
 use crate::traits::MotionControl;
@@ -40,6 +41,20 @@ where
         }
     }
 
+    /// Drop the future and release the resources that were moved into it
+    pub fn release(self) -> Driver {
+        self.driver
+    }
+}
+
+impl<Driver> LegacyFuture for MoveToFuture<Driver>
+where
+    Driver: MotionControl,
+{
+    type DriverError = Driver::Error;
+    type TimerError = ();
+    type FutureOutput = Result<(), Driver::Error>;
+
     /// Poll the future
     ///
     /// The future must be polled for the operation to make progress. The
@@ -51,7 +66,7 @@ where
     /// calling it at a high frequency (see [`Self::wait`]) until the operation
     /// completes, or set up an interrupt that fires once the timer finishes
     /// counting down, and call this method again once it does.
-    pub fn poll(&mut self) -> Poll<Result<(), Driver::Error>> {
+    fn poll(&mut self) -> Poll<Self::FutureOutput> {
         match self.state {
             State::Initial {
                 max_velocity,
@@ -72,23 +87,6 @@ where
             }
             State::Finished => Poll::Ready(Ok(())),
         }
-    }
-
-    /// Wait until the operation completes
-    ///
-    /// This method will call [`Self::poll`] in a busy loop until the operation
-    /// has finished.
-    pub fn wait(&mut self) -> Result<(), Driver::Error> {
-        loop {
-            if let Poll::Ready(result) = self.poll() {
-                return result;
-            }
-        }
-    }
-
-    /// Drop the future and release the resources that were moved into it
-    pub fn release(self) -> Driver {
-        self.driver
     }
 }
 

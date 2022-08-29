@@ -1,5 +1,5 @@
+use crate::stepper::legacy_future::LegacyFuture;
 use core::task::Poll;
-
 use embedded_hal::digital::ErrorType;
 use fugit::{
     NanosDurationU32 as Nanoseconds, TimerDurationU32 as TimerDuration,
