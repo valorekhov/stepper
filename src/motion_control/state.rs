@@ -1,16 +1,14 @@
-use crate::stepper::legacy_future::LegacyFuture;
+use core::convert::Infallible;
 use core::task::Poll;
 use embedded_hal::digital::ErrorType;
+use embedded_hal_async::delay::DelayUs;
 use fugit::{
     NanosDurationU32 as Nanoseconds, TimerDurationU32 as TimerDuration,
 };
-use fugit_timer::Timer as TimerTrait;
 use ramp_maker::MotionProfile;
 
-use crate::{
-    traits::{SetDirection, Step},
-    Direction, SetDirectionFuture, StepFuture,
-};
+use crate::traits::Step;
+use crate::{traits::SetDirection, Direction, SetDirectionFuture, StepFuture};
 
 use super::{
     error::{Error, TimeConversionError},
@@ -18,37 +16,39 @@ use super::{
 };
 
 pub enum State<
+    'r,
     Driver,
-    Timer,
+    Delay: DelayUs,
     Profile: MotionProfile,
     const TIMER_HZ: u32,
     const STEP_BUS_WIDTH: usize,
 > {
     Idle {
         driver: Driver,
-        timer: Timer,
+        timer: Delay,
     },
-    SetDirection(SetDirectionFuture<Driver, Timer, TIMER_HZ>),
+    SetDirection(SetDirectionFuture<Driver, Delay, TIMER_HZ>),
     Step {
-        future: StepFuture<Driver, Timer, TIMER_HZ, STEP_BUS_WIDTH>,
+        future: StepFuture<'r, Delay, Driver, STEP_BUS_WIDTH>,
         delay: Profile::Delay,
     },
     StepDelay {
         driver: Driver,
-        timer: Timer,
+        timer: Delay,
     },
     Invalid,
 }
 
 pub fn update<
+    'r,
     Driver,
-    Timer,
+    Delay: DelayUs,
     Profile,
     Convert,
     const TIMER_HZ: u32,
     const STEP_BUS_WIDTH: usize,
 >(
-    mut state: State<Driver, Timer, Profile, TIMER_HZ, STEP_BUS_WIDTH>,
+    mut state: State<'r, Driver, Delay, Profile, TIMER_HZ, STEP_BUS_WIDTH>,
     new_motion: &mut Option<Direction>,
     profile: &mut Profile,
     current_step: &mut i32,
@@ -60,17 +60,17 @@ pub fn update<
         Error<
             <Driver as SetDirection>::Error,
             <<Driver as SetDirection>::Dir as ErrorType>::Error,
-            <Driver as Step<STEP_BUS_WIDTH>>::Error,
-            <<Driver as Step<STEP_BUS_WIDTH>>::StepPin as ErrorType>::Error,
-            Timer::Error,
+            <Driver as Step>::OutputStepFutureError,
+            Infallible,
+            Delay::Error,
             Convert::Error,
         >,
     >,
-    State<Driver, Timer, Profile, TIMER_HZ, STEP_BUS_WIDTH>,
+    State<'r, Driver, Delay, Profile, TIMER_HZ, STEP_BUS_WIDTH>,
 )
 where
-    Driver: SetDirection + Step<STEP_BUS_WIDTH>,
-    Timer: TimerTrait<TIMER_HZ>,
+    Driver: SetDirection + Step,
+    Delay: DelayUs,
     Profile: MotionProfile,
     Convert: DelayToTicks<Profile::Delay, TIMER_HZ>,
 {

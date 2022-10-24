@@ -14,19 +14,20 @@ pub use self::{
 use core::convert::Infallible;
 
 use embedded_hal::digital::ErrorType;
+use embedded_hal_async::delay::DelayUs;
 use fugit::NanosDurationU32 as Nanoseconds;
-use fugit_timer::Timer as TimerTrait;
 use ramp_maker::MotionProfile;
 use replace_with::replace_with_and_return;
 
 use crate::stepper::set_step_mode::SetStepModeFuture;
 use crate::traits::OutputPinAction;
+use crate::util::delay::AsyncDelay;
 use crate::{
     traits::{
         EnableMotionControl, MotionControl, SetDirection, SetStepMode, Step,
     },
     util::ref_mut::RefMut,
-    Direction, SetDirectionFuture, StepFuture,
+    Direction, SetDirectionFuture,
 };
 
 use self::state::State;
@@ -43,14 +44,15 @@ use self::state::State;
 ///
 /// [`Stepper`]: crate::Stepper
 pub struct SoftwareMotionControl<
+    'r,
     Driver,
-    Timer,
+    Delay: DelayUs,
     Profile: MotionProfile,
     Convert,
     const TIMER_HZ: u32,
     const STEP_BUS_WIDTH: usize,
 > {
-    state: State<Driver, Timer, Profile, TIMER_HZ, STEP_BUS_WIDTH>,
+    state: State<'r, Driver, Delay, Profile, TIMER_HZ, STEP_BUS_WIDTH>,
     new_motion: Option<Direction>,
     profile: Profile,
     current_step: i32,
@@ -59,16 +61,18 @@ pub struct SoftwareMotionControl<
 }
 
 impl<
+        'r,
         Driver,
-        Timer,
+        Delay,
         Profile,
         Convert,
         const TIMER_HZ: u32,
         const STEP_BUS_WIDTH: usize,
     >
     SoftwareMotionControl<
+        'r,
         Driver,
-        Timer,
+        Delay,
         Profile,
         Convert,
         TIMER_HZ,
@@ -76,6 +80,7 @@ impl<
     >
 where
     Profile: MotionProfile,
+    Delay: embedded_hal_async::delay::DelayUs,
 {
     /// Construct a new instance of `SoftwareMotionControl`
     ///
@@ -88,7 +93,7 @@ where
     /// [`Stepper::enable_motion_control`]: crate::Stepper::enable_motion_control
     pub fn new(
         driver: Driver,
-        timer: Timer,
+        timer: Delay,
         profile: Profile,
         convert: Convert,
     ) -> Self {
@@ -130,7 +135,7 @@ where
     /// Access a reference to the wrapped timer
     ///
     /// This is only possible if there is no ongoing movement.
-    pub fn timer(&self) -> Option<&Timer> {
+    pub fn timer(&self) -> Option<&Delay> {
         if let State::Idle { timer, .. } = &self.state {
             return Some(timer);
         }
@@ -141,7 +146,7 @@ where
     /// Access a mutable reference to the wrapped timer
     ///
     /// This is only possible if there is no ongoing movement.
-    pub fn timer_mut(&mut self) -> Option<&mut Timer> {
+    pub fn timer_mut(&mut self) -> Option<&mut Delay> {
         if let State::Idle { timer, .. } = &mut self.state {
             return Some(timer);
         }
@@ -188,12 +193,12 @@ where
         &mut self,
         step_mode: Driver::StepMode,
     ) -> Result<
-        SetStepModeFuture<RefMut<Driver>, RefMut<Timer>, TIMER_HZ>,
+        SetStepModeFuture<RefMut<Driver>, RefMut<Delay>, TIMER_HZ>,
         BusyError<Infallible>,
     >
     where
         Driver: SetStepMode,
-        Timer: TimerTrait<TIMER_HZ>,
+        Delay: DelayUs,
     {
         let future = match &mut self.state {
             State::Idle { driver, timer } => {
@@ -224,12 +229,12 @@ where
         &mut self,
         direction: Direction,
     ) -> Result<
-        SetDirectionFuture<RefMut<Driver>, RefMut<Timer>, TIMER_HZ>,
+        SetDirectionFuture<RefMut<Driver>, RefMut<Delay>, TIMER_HZ>,
         BusyError<Infallible>,
     >
     where
         Driver: SetDirection,
-        Timer: TimerTrait<TIMER_HZ>,
+        Delay: DelayUs,
     {
         let future = match &mut self.state {
             State::Idle { driver, timer } => SetDirectionFuture::new(
@@ -259,19 +264,17 @@ where
     ///
     /// [`Stepper::step`]: crate::Stepper::step
     pub fn step(
-        &mut self,
-    ) -> Result<
-        StepFuture<RefMut<Driver>, RefMut<Timer>, TIMER_HZ, STEP_BUS_WIDTH>,
-        BusyError<Infallible>,
-    >
+        &'r mut self,
+    ) -> Result<Driver::OutputStepFuture<'r>, BusyError<Infallible>>
     where
-        Driver: Step<STEP_BUS_WIDTH>,
-        Timer: TimerTrait<TIMER_HZ>,
+        Driver: Step,
+        Delay: DelayUs,
     {
         let future = match &mut self.state {
-            State::Idle { driver, timer } => {
-                StepFuture::new(RefMut(driver), RefMut(timer))
-            }
+            State::Idle {
+                driver,
+                timer: delay,
+            } => driver.step(delay),
             _ => return Err(BusyError::Busy),
         };
 
@@ -280,25 +283,27 @@ where
 }
 
 impl<
+        'r,
         Driver,
-        Timer,
+        Delay: DelayUs,
         Profile,
         Convert,
         const TIMER_HZ: u32,
         const STEP_BUS_WIDTH: usize,
     > MotionControl
     for SoftwareMotionControl<
+        'r,
         Driver,
-        Timer,
+        Delay,
         Profile,
         Convert,
         TIMER_HZ,
         STEP_BUS_WIDTH,
     >
 where
-    Driver: SetDirection + Step<STEP_BUS_WIDTH>,
+    Driver: SetDirection + Step,
     Profile: MotionProfile,
-    Timer: TimerTrait<TIMER_HZ>,
+    Delay: DelayUs,
     Profile::Velocity: Copy,
     Convert: DelayToTicks<Profile::Delay, TIMER_HZ>,
 {
@@ -306,9 +311,9 @@ where
     type Error = Error<
         <Driver as SetDirection>::Error,
         <<Driver as SetDirection>::Dir as ErrorType>::Error,
-        <Driver as Step<STEP_BUS_WIDTH>>::Error,
-        <<Driver as Step<STEP_BUS_WIDTH>>::StepPin as ErrorType>::Error,
-        Timer::Error,
+        <Driver as Step>::OutputStepFutureError,
+        Infallible,
+        Delay::Error,
         Convert::Error,
     >;
 
@@ -368,16 +373,18 @@ where
 // we'd have to panic, and I don't know if that would be worth it.
 
 impl<
+        'r,
         Driver,
-        Timer,
+        Delay: DelayUs,
         Profile,
         Convert,
         const TIMER_HZ: u32,
         const STEP_BUS_WIDTH: usize,
     > SetStepMode
     for SoftwareMotionControl<
+        'r,
         Driver,
-        Timer,
+        Delay,
         Profile,
         Convert,
         TIMER_HZ,
@@ -416,16 +423,18 @@ where
 }
 
 impl<
+        'r,
         Driver,
-        Timer,
+        Delay: DelayUs,
         Profile,
         Convert,
         const TIMER_HZ: u32,
         const STEP_BUS_WIDTH: usize,
     > SetDirection
     for SoftwareMotionControl<
+        'r,
         Driver,
-        Timer,
+        Delay,
         Profile,
         Convert,
         TIMER_HZ,
@@ -454,53 +463,42 @@ where
 }
 
 impl<
+        'r,
         Driver,
-        Timer,
+        Delay: DelayUs,
         Profile,
         Convert,
         const TIMER_HZ: u32,
         const STEP_BUS_WIDTH: usize,
-    > Step<STEP_BUS_WIDTH>
+    > Step
     for SoftwareMotionControl<
+        'r,
         Driver,
-        Timer,
+        Delay,
         Profile,
         Convert,
         TIMER_HZ,
         STEP_BUS_WIDTH,
     >
 where
-    Driver: Step<STEP_BUS_WIDTH>,
-    Profile: MotionProfile,
+    Driver: Step,
+    Profile: MotionProfile + 'r,
+    Convert: 'r,
 {
-    const PULSE_LENGTH: Nanoseconds = Driver::PULSE_LENGTH;
+    type Delay = Delay;
+    type OutputStepFutureResult = ();
+    type OutputStepFutureError = ();
+    type OutputStepFuture<'r2>
 
-    type StepPin = Driver::StepPin;
-    type Error = BusyError<Driver::Error>;
+    = Driver::OutputStepFuture<'r2> where Self: 'r2, Delay: 'r2,;
 
-    fn step_leading(
-        &mut self,
-    ) -> Result<
-        [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
-        Self::Error,
-    > {
+    fn step<'r2>(
+        &'r2 mut self,
+        delay: &'r2 mut Self::Delay,
+    ) -> Self::OutputStepFuture<'r> {
         match self.driver_mut() {
             Some(driver) => {
-                driver.step_leading().map_err(|err| BusyError::Other(err))
-            }
-            None => Err(BusyError::Busy),
-        }
-    }
-
-    fn step_trailing(
-        &mut self,
-    ) -> Result<
-        [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
-        Self::Error,
-    > {
-        match self.driver_mut() {
-            Some(driver) => {
-                driver.step_leading().map_err(|err| BusyError::Other(err))
+                driver.step() //.map_err(|err| BusyError::Other(err))
             }
             None => Err(BusyError::Busy),
         }
@@ -510,24 +508,26 @@ where
 // Blanket implementation of `EnableMotionControl` for all STEP/DIR stepper
 // drivers.
 impl<
+        'r,
         Driver,
-        Timer,
+        Delay,
         Profile,
         Convert,
         const TIMER_HZ: u32,
         const STEP_BUS_WIDTH: usize,
-    > EnableMotionControl<(Timer, Profile, Convert), TIMER_HZ, STEP_BUS_WIDTH>
-    for Driver
+    > EnableMotionControl<(Delay, Profile, Convert), TIMER_HZ, STEP_BUS_WIDTH>
+    for &'r Driver
 where
-    Driver: SetDirection + Step<STEP_BUS_WIDTH>,
+    Driver: SetDirection + Step,
     Profile: MotionProfile,
-    Timer: TimerTrait<TIMER_HZ>,
+    Delay: DelayUs + 'r,
     Profile::Velocity: Copy,
     Convert: DelayToTicks<Profile::Delay, TIMER_HZ>,
 {
     type WithMotionControl = SoftwareMotionControl<
+        'r,
         Driver,
-        Timer,
+        Delay,
         Profile,
         Convert,
         TIMER_HZ,
@@ -536,7 +536,7 @@ where
 
     fn enable_motion_control(
         self,
-        (timer, profile, convert): (Timer, Profile, Convert),
+        (timer, profile, convert): (Delay, Profile, Convert),
     ) -> Self::WithMotionControl {
         SoftwareMotionControl::new(self, timer, profile, convert)
     }

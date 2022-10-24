@@ -10,7 +10,7 @@ use fugit::{
 use fugit_timer::Timer;
 
 use crate::traits::{
-    MotionControl, OutputPinAction, SetDirection, SetStepMode, Step,
+    MotionControl, OutputPinAction, SetDirection, SetStepMode,
 };
 
 /// Generic wrapper around a mutable reference
@@ -113,30 +113,18 @@ where
     }
 }
 
-impl<'r, T, const STEP_BUS_WIDTH: usize> Step<STEP_BUS_WIDTH> for RefMut<'r, T>
-where
-    T: Step<STEP_BUS_WIDTH>,
-{
-    const PULSE_LENGTH: Nanoseconds = T::PULSE_LENGTH;
-
-    type StepPin = T::StepPin;
-    type Error = T::Error;
-
-    fn step_leading(
-        &mut self,
-    ) -> Result<
-        [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
-        Self::Error,
-    > {
-        self.0.step_leading()
-    }
-
-    fn step_trailing(
-        &mut self,
-    ) -> Result<
-        [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
-        Self::Error,
-    > {
-        self.0.step_trailing()
-    }
-}
+// impl<'r, T, Delay> Step for RefMut<'r, T>
+// where
+//     T: Step,
+// {
+//     type OutputStepFutureResult = T::OutputStepFutureResult;
+//     type OutputStepFutureError = T::OutputStepFutureError;
+//     type OutputStepFuture<'r2> = T::OutputStepFuture<'r> where Self: 'r, Delay: 'r,;
+//
+//     fn step<'r2>(
+//         &'r mut self,
+//         delay: &'r mut Delay,
+//     ) -> Self::OutputStepFuture<'r> {
+//         self.0.step()
+//     }
+// }

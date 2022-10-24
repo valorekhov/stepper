@@ -24,19 +24,13 @@ pub trait LegacyFuture {
 }
 
 #[pin_project::pin_project]
-pub struct WrappedLegacyFuture<Driver, Timer, Fut> {
+pub struct WrappedLegacyFuture<Fut> {
     future: Fut,
-    _marker_timer: PhantomData<Timer>,
-    _marker_driver: PhantomData<Driver>,
 }
 
-impl<Driver, Timer, Fut: LegacyFuture> WrappedLegacyFuture<Driver, Timer, Fut> {
-    pub fn new(future: Fut) -> Self {
-        Self {
-            future,
-            _marker_timer: PhantomData::default(),
-            _marker_driver: PhantomData::default(),
-        }
+impl<Fut> WrappedLegacyFuture<Fut> {
+    pub fn new(future: Fut) -> WrappedLegacyFuture<Fut> {
+        WrappedLegacyFuture { future }
     }
 
     pub fn wrapped_future(self) -> Fut {
@@ -44,9 +38,7 @@ impl<Driver, Timer, Fut: LegacyFuture> WrappedLegacyFuture<Driver, Timer, Fut> {
     }
 }
 
-impl<Driver, Timer, Fut: LegacyFuture> Future
-    for WrappedLegacyFuture<Driver, Timer, Fut>
-{
+impl<Fut: LegacyFuture> Future for WrappedLegacyFuture<Fut> {
     type Output = Fut::FutureOutput;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -58,3 +50,38 @@ impl<Driver, Timer, Fut: LegacyFuture> Future
         res
     }
 }
+
+#[pin_project::pin_project]
+pub struct WrappedLegacyFuture3<Driver, Timer, Fut> {
+    future: Fut,
+    _marker_timer: PhantomData<Timer>,
+    _marker_driver: PhantomData<Driver>,
+}
+
+impl<Driver, Timer, Fut: LegacyFuture>
+    WrappedLegacyFuture3<Driver, Timer, Fut>
+{
+    pub fn new(future: Fut) -> WrappedLegacyFuture<Fut> {
+        WrappedLegacyFuture { future }
+    }
+
+    pub fn wrapped_future(self) -> Fut {
+        self.future
+    }
+}
+
+//
+// impl<Driver, Timer, Fut: LegacyFuture> Future
+//     for WrappedLegacyFuture<Driver, Timer, Fut>
+// {
+//     type Output = Fut::FutureOutput;
+//
+//     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+//         let mut this = self;
+//         let res = this.future.poll();
+//         if res.is_pending() {
+//             cx.waker().wake_by_ref();
+//         }
+//         res
+//     }
+// }

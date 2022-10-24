@@ -161,7 +161,6 @@
 #![cfg_attr(not(test), no_std)]
 #![deny(missing_docs, rustdoc::broken_intra_doc_links)]
 #![cfg_attr(feature = "async", feature(type_alias_impl_trait))]
-#![cfg_attr(feature = "async", feature(generic_associated_types))]
 #![cfg_attr(feature = "async", feature(mixed_integer_ops))]
 
 pub extern crate embedded_hal;

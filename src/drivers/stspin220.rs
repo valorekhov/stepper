@@ -15,12 +15,12 @@ use embedded_hal::digital::PinState::{High, Low};
 use embedded_hal::digital::{blocking::OutputPin, PinState};
 use fugit::NanosDurationU32 as Nanoseconds;
 
-use crate::traits::OutputPinAction;
+use crate::traits::{OutputPinAction, StepLegacy};
 use crate::{
     step_mode::StepMode256,
     traits::{
         EnableDirectionControl, EnableStepControl, EnableStepModeControl,
-        SetDirection, SetStepMode, Step,
+        SetDirection, SetStepMode,
     },
     Direction,
 };
@@ -227,7 +227,8 @@ impl<
         StepMode3,
         DirMode4,
         OutputPinError,
-    > EnableStepControl<StepMode3, 1>
+        Delay,
+    > EnableStepControl<Delay, StepMode3>
     for STSPIN220<EnableFault, StandbyReset, Mode1, Mode2, (), DirMode4>
 where
     StepMode3: OutputPin<Error = OutputPinError>,
@@ -258,7 +259,7 @@ impl<
         StepMode3,
         DirMode4,
         OutputPinError,
-    > Step<1>
+    > StepLegacy<1>
     for STSPIN220<EnableFault, StandbyReset, Mode1, Mode2, StepMode3, DirMode4>
 where
     StepMode3: OutputPin<Error = OutputPinError>,

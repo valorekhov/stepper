@@ -11,18 +11,21 @@
 
 use core::convert::Infallible;
 use core::fmt::Debug;
+use core::marker::PhantomData;
 use core::mem;
 use core::mem::MaybeUninit;
 
 use embedded_hal::digital::blocking::OutputPin;
-use embedded_hal::digital::PinState::{High, Low};
+use embedded_hal::digital::ErrorType;
+use embedded_hal::digital::PinState::Low;
+use embedded_hal_async::delay::DelayUs;
 use fugit::NanosDurationU32 as Nanoseconds;
 
 use crate::traits::ReleaseCoils;
 use crate::{
     traits::{
         EnableDirectionControl, EnableStepControl, OutputPinAction,
-        SetDirection, Step,
+        SetDirection,
     },
     Direction,
 };
@@ -36,41 +39,34 @@ pub mod generic_async;
 /// Users are not expected to use this API directly, except to create an
 /// instance using [`QuadLine::new`]. Please check out
 /// [`Stepper`](crate::Stepper) instead.
-pub struct Generic<LinePin, const STEP_BUS_WIDTH: usize, const NUM_STEPS: usize>
-{
-    pins: [LinePin; STEP_BUS_WIDTH],
+///
+
+//TODO: Rename to `GenericDriver`
+pub struct Generic<Pins, const NUM_STEPS: usize, Delay> {
+    pins: Pins,
     steps: [u8; NUM_STEPS],
     step: Option<u8>,
     direction: Option<Direction>,
+    _maker: PhantomData<Delay>,
 }
 
-impl<LinePin, const STEP_BUS_WIDTH: usize, const NUM_STEPS: usize>
-    Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>
-{
-    /// Create a new instance of `QuadLine`
-    pub fn new(
-        pins: [LinePin; STEP_BUS_WIDTH],
-        steps: [u8; NUM_STEPS],
-    ) -> Self {
+impl<const NUM_STEPS: usize> Generic<(), NUM_STEPS, ()> {
+    /// Create a new instance of `Generic`
+    pub fn new(steps: [u8; NUM_STEPS]) -> Self {
         Self {
-            pins,
+            pins: (),
             steps,
             step: None,
             direction: None,
+            _maker: PhantomData::default(),
         }
     }
 }
 
-impl<
-        LinePin,
-        OutputPinError,
-        const STEP_BUS_WIDTH: usize,
-        const NUM_STEPS: usize,
-    > EnableDirectionControl<()> for Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>
-where
-    LinePin: OutputPin<Error = OutputPinError>,
+impl<Pins, const NUM_STEPS: usize> EnableDirectionControl<()>
+    for Generic<Pins, NUM_STEPS, ()>
 {
-    type WithDirectionControl = Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>;
+    type WithDirectionControl = Generic<Pins, NUM_STEPS, ()>;
 
     fn enable_direction_control(self, _: ()) -> Self::WithDirectionControl {
         Generic {
@@ -78,24 +74,34 @@ where
             steps: self.steps,
             step: self.step,
             direction: self.direction,
+            _maker: self._maker,
         }
     }
 }
 
-impl<
-        LinePin,
-        OutputPinError,
-        const STEP_BUS_WIDTH: usize,
-        const NUM_STEPS: usize,
-    > SetDirection for Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>
-where
-    LinePin: OutputPin<Error = OutputPinError>,
+struct FooPin {}
+
+impl ErrorType for FooPin {
+    type Error = Infallible;
+}
+
+impl OutputPin for FooPin {
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        todo!()
+    }
+}
+
+impl<Pins, const NUM_STEPS: usize> SetDirection
+    for Generic<Pins, NUM_STEPS, ()>
 {
     const SETUP_TIME: Nanoseconds = Nanoseconds::from_ticks(0);
 
-    // The Dir pin will not really be driven. Setting it to a real type instead of ()
-    // to satisfy generic arg constraints
-    type Dir = LinePin;
+    // TODO: Remove `FooPin` after `SetDirection` is refactored to return a Future
+    type Dir = FooPin;
     type Error = Infallible;
 
     fn dir(
@@ -108,24 +114,25 @@ where
 }
 
 impl<
-        LinePin,
-        OutputPinError,
+        LinePin: OutputPin,
+        Delay: DelayUs,
         const STEP_BUS_WIDTH: usize,
         const NUM_STEPS: usize,
-    > EnableStepControl<(), STEP_BUS_WIDTH>
-    for Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>
-where
-    LinePin: OutputPin<Error = OutputPinError>,
-    OutputPinError: Debug,
+    > EnableStepControl<[LinePin; STEP_BUS_WIDTH]>
+    for Generic<(), NUM_STEPS, ()>
 {
-    type WithStepControl = Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>;
+    type WithStepControl = Generic<[LinePin; STEP_BUS_WIDTH], NUM_STEPS, Delay>;
 
-    fn enable_step_control(self, _: ()) -> Self::WithStepControl {
+    fn enable_step_control(
+        self,
+        pins: [LinePin; STEP_BUS_WIDTH],
+    ) -> Self::WithStepControl {
         Generic {
-            pins: self.pins,
+            pins,
             steps: self.steps,
             step: self.step,
             direction: self.direction,
+            _maker: PhantomData::default(),
         }
     }
 }
@@ -136,93 +143,85 @@ pub enum GenericStepError {
     /// Call enable_direction_control on the ['Stepper'] instance first
     MustCallEnableDirection,
 }
+//
+// impl<
+//     Pins,
+//         OutputPinError,
+//         const STEP_BUS_WIDTH: usize,
+//         const NUM_STEPS: usize,
+//     > StepLegacy<STEP_BUS_WIDTH> for Generic<Pins, NUM_STEPS>
+// where
+//     OutputPinError: Debug,
+// {
+//     /// NOT USED
+//     const PULSE_LENGTH: Nanoseconds = Nanoseconds::from_ticks(0);
+//
+//     /// Type of the step pin(s)
+//     type StepPin = LinePin;
+//     type Error = GenericStepError;
+//
+//     fn step_leading(
+//         &mut self,
+//     ) -> Result<
+//         [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
+//         Self::Error,
+//     > {
+//         let direction = self.direction.unwrap_or(Direction::Forward);
+//
+//         let mut current_step = self.step.unwrap_or(0) as usize;
+//
+//         // Retain current firing_seq here before current step is incremented
+//         let firing_sequence =
+//             *self.steps.get(current_step).expect("Within index");
+//
+//         current_step = match current_step.checked_add_signed(match direction {
+//             Direction::Forward => 1_isize,
+//             Direction::Backward => -1_isize,
+//         }) {
+//             Some(step) => {
+//                 if direction == Direction::Forward && step >= NUM_STEPS {
+//                     0
+//                 } else {
+//                     step
+//                 }
+//             }
+//             // Subtraction (more like) / addition (less like) overflow occurred
+//             None => match direction {
+//                 // Prior step was 0 counting down / moving backward, set Step to max of the range
+//                 Direction::Backward => NUM_STEPS - 1,
+//                 // Unlikely to get here unless someone supplied `usize::Max` steps? :)
+//                 Direction::Forward => 0,
+//             },
+//         };
+//
+//         self.step = Some(current_step as u8);
+//
+//         let x = move |i, pin| {
+//             if firing_sequence >> (STEP_BUS_WIDTH - 1 - i) & 0x01 == 0x01 {
+//                 OutputPinAction::Set(pin, High)
+//             } else {
+//                 OutputPinAction::Set(pin, Low)
+//             }
+//         };
+//
+//         let res = self.create_step_actions(x);
+//
+//         Ok(res)
+//     }
+//
+//     fn step_trailing(
+//         &mut self,
+//     ) -> Result<
+//         [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
+//         Self::Error,
+//     > {
+//         let res = self.create_step_actions(|_, _| OutputPinAction::None);
+//         Ok(res)
+//     }
+// }
 
-impl<
-        LinePin,
-        OutputPinError,
-        const STEP_BUS_WIDTH: usize,
-        const NUM_STEPS: usize,
-    > Step<STEP_BUS_WIDTH> for Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>
-where
-    LinePin: OutputPin<Error = OutputPinError>,
-    OutputPinError: Debug,
-{
-    /// NOT USED
-    const PULSE_LENGTH: Nanoseconds = Nanoseconds::from_ticks(0);
-
-    /// Type of the step pin(s)
-    type StepPin = LinePin;
-    type Error = GenericStepError;
-
-    fn step_leading(
-        &mut self,
-    ) -> Result<
-        [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
-        Self::Error,
-    > {
-        let direction = self.direction.unwrap_or(Direction::Forward);
-
-        let mut current_step = self.step.unwrap_or(0) as usize;
-
-        // Retain current firing_seq here before current step is incremented
-        let firing_sequence =
-            *self.steps.get(current_step).expect("Within index");
-
-        current_step = match current_step.checked_add_signed(match direction {
-            Direction::Forward => 1_isize,
-            Direction::Backward => -1_isize,
-        }) {
-            Some(step) => {
-                if direction == Direction::Forward && step >= NUM_STEPS {
-                    0
-                } else {
-                    step
-                }
-            }
-            // Subtraction (more like) / addition (less like) overflow occurred
-            None => match direction {
-                // Prior step was 0 counting down / moving backward, set Step to max of the range
-                Direction::Backward => NUM_STEPS - 1,
-                // Unlikely to get here unless someone supplied `usize::Max` steps? :)
-                Direction::Forward => 0,
-            },
-        };
-
-        self.step = Some(current_step as u8);
-
-        let x = move |i, pin| {
-            if firing_sequence >> (STEP_BUS_WIDTH - 1 - i) & 0x01 == 0x01 {
-                OutputPinAction::Set(pin, High)
-            } else {
-                OutputPinAction::Set(pin, Low)
-            }
-        };
-
-        let res = self.create_step_actions(x);
-
-        Ok(res)
-    }
-
-    fn step_trailing(
-        &mut self,
-    ) -> Result<
-        [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
-        Self::Error,
-    > {
-        let res = self.create_step_actions(|_, _| OutputPinAction::None);
-        Ok(res)
-    }
-}
-
-impl<
-        LinePin,
-        OutputPinError,
-        const STEP_BUS_WIDTH: usize,
-        const NUM_STEPS: usize,
-    > Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>
-where
-    LinePin: OutputPin<Error = OutputPinError>,
-    OutputPinError: Debug,
+impl<LinePin, const STEP_BUS_WIDTH: usize, const NUM_STEPS: usize>
+    Generic<[LinePin; STEP_BUS_WIDTH], NUM_STEPS, ()>
 {
     fn create_step_actions<'a, F>(
         &'a mut self,
@@ -253,7 +252,7 @@ impl<
         const STEP_BUS_WIDTH: usize,
         const NUM_STEPS: usize,
     > ReleaseCoils<STEP_BUS_WIDTH>
-    for Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>
+    for Generic<[LinePin; STEP_BUS_WIDTH], NUM_STEPS, ()>
 where
     LinePin: OutputPin<Error = OutputPinError>,
     OutputPinError: Debug,
@@ -273,9 +272,7 @@ where
 }
 
 impl<LinePin, const STEP_BUS_WIDTH: usize, const NUM_STEPS: usize>
-    Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>
-where
-    Self: Step<STEP_BUS_WIDTH>,
+    Generic<[LinePin; STEP_BUS_WIDTH], NUM_STEPS, ()>
 {
     /// Sets the current step in the provided step sequence. Has to be less than the "total number of steps"
     pub fn set_step(&mut self, step: u8) -> Result<(), ()> {
@@ -290,18 +287,15 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::drivers::generic::{Generic, GenericStepError};
-    use crate::legacy_future::LegacyFuture;
-    use crate::test_utils::OkTimer;
-    use crate::traits::Step;
+    use crate::drivers::generic::Generic;
+    use crate::test_utils::{NoDelay, OkTimer};
     use crate::{motion_control, test_utils::MockPin, Direction, Stepper};
     use core::convert::Infallible;
     use core::task::Poll;
     use embedded_hal::digital::blocking::OutputPin;
     use fixed::traits::Fixed;
-    use fugit::{TimerDurationU32, TimerInstantU32};
+    use fugit::TimerDurationU32;
     use mockall::mock;
-    use nb::Error::WouldBlock;
 
     type FixedI64U32 = fixed::FixedI64<typenum::U32>;
     mock! {
@@ -346,8 +340,8 @@ mod test {
         }
     }
 
-    #[test]
-    pub fn test_stepping() {
+    #[tokio::test]
+    pub async fn test_stepping() {
         let steps = [0b01_u8, 0b10_u8];
 
         {
@@ -359,34 +353,27 @@ mod test {
 
             let mut dir_timer = OkTimer::<1>::new();
 
-            let mut stepper = Stepper::from_driver(Generic::new(
-                [&mut pin1, &mut pin2],
-                steps,
-            ))
-            .enable_direction_control((), Direction::Backward, &mut dir_timer)
-            .expect("setting dit control to work")
-            .enable_step_control(());
+            let pins = [&mut pin1, &mut pin2];
+            let mut stepper = Stepper::from_driver(Generic::new(steps))
+                .enable_direction_control(
+                    (),
+                    Direction::Backward,
+                    &mut dir_timer,
+                )
+                .expect("setting dit control to work")
+                .enable_step_control(pins);
 
-            let mut timer: MockTimer = MockTimer::new();
-            timer.expect_start().return_once(|_| Ok(()));
-            timer.expect_wait().times(2).returning(|| Err(WouldBlock));
-            timer.expect_wait().return_once(|| Ok(()));
-
-            let mut fut = stepper.step(&mut timer);
-
-            // First poll should kick off the timer calling Timer::start(duration)
-            assert_eq!(fut.poll(), Poll::Pending);
-            // Second & 3rd poll should result in the timer returning WouldBlock
-            assert_eq!(fut.poll(), Poll::Pending);
-            assert_eq!(fut.poll(), Poll::Pending);
-
-            assert_eq!(fut.poll(), Poll::Ready(Ok(())));
+            let mut delay = NoDelay {};
+            stepper
+                .step(&mut delay)
+                .await
+                .expect("Stepping did not work");
             assert_eq!(stepper.driver().step, Some(1));
         }
     }
 
-    #[test]
-    pub fn test_reverse_stepping() {
+    #[tokio::test]
+    pub async fn test_reverse_stepping() {
         let steps = [0b01 as u8, 0b10 as u8];
         {
             {
@@ -398,32 +385,24 @@ mod test {
 
                 let mut dir_timer = OkTimer::<1>::new();
 
-                let mut stepper = Stepper::from_driver(Generic::new(
-                    [&mut pin1, &mut pin2],
-                    steps,
-                ))
-                .enable_direction_control(
-                    (),
-                    Direction::Backward,
-                    &mut dir_timer,
-                )
-                .expect("setting dit control to work")
-                .enable_step_control(());
+                let pins = [&mut pin1, &mut pin2];
+                let mut stepper = Stepper::from_driver(Generic::new(steps))
+                    .enable_direction_control(
+                        (),
+                        Direction::Backward,
+                        &mut dir_timer,
+                    )
+                    .expect("setting dit control to work")
+                    .enable_step_control(pins);
 
-                let mut timer = OkTimer::<1>::new();
+                let mut delay = NoDelay;
 
                 assert_eq!(stepper.driver().step, None);
 
-                let mut fut = stepper.step(&mut timer);
-
-                assert_eq!(fut.poll(), Poll::Pending);
-                match fut.poll() {
-                    Poll::Ready(res) => {
-                        assert!(!res.is_err())
-                    }
-                    Poll::Pending => assert!(false),
-                };
-
+                stepper
+                    .step::<[&mut MockPin; 2], NoDelay>(&mut delay)
+                    .await
+                    .expect("Stepping did not work");
                 assert_eq!(stepper.driver().step, Some(1));
             }
 
@@ -436,40 +415,33 @@ mod test {
 
                 let mut dir_timer = OkTimer::<1>::new();
 
-                let mut stepper = Stepper::from_driver(Generic::new(
-                    [&mut pin1, &mut pin2],
-                    steps,
-                ))
-                .enable_direction_control(
-                    (),
-                    Direction::Backward,
-                    &mut dir_timer,
-                )
-                .expect("setting dit control to work")
-                .enable_step_control(());
+                let pins = [&mut pin1, &mut pin2];
+                let mut stepper = Stepper::from_driver(Generic::new(steps))
+                    .enable_direction_control(
+                        (),
+                        Direction::Backward,
+                        &mut dir_timer,
+                    )
+                    .expect("setting dit control to work")
+                    .enable_step_control::<[&mut MockPin; 2], NoDelay>(pins);
 
-                let mut timer = OkTimer::<1>::new();
+                let mut delay = NoDelay;
 
                 stepper.driver().set_step(1).expect("step be set");
                 assert_eq!(stepper.driver().step, Some(1));
 
-                let mut fut = stepper.step(&mut timer);
-
-                assert_eq!(fut.poll(), Poll::Pending);
-                match fut.poll() {
-                    Poll::Ready(res) => {
-                        assert!(!res.is_err())
-                    }
-                    Poll::Pending => assert!(false),
-                };
+                stepper
+                    .step::<[&mut MockPin; 2], NoDelay>(&mut delay)
+                    .await
+                    .expect("Stepping did not work");
 
                 assert_eq!(stepper.driver().step, Some(0));
             }
         }
     }
 
-    #[test]
-    pub fn test_software_motion_control() {
+    #[tokio::test]
+    pub async fn test_software_motion_control() {
         let steps = [0_u8, 1_u8];
 
         let mut pin1 = MockPin::new();
@@ -485,16 +457,13 @@ mod test {
         let max_velocity = FixedI64U32::from_num(0.001);
         let profile = ramp_maker::Trapezoidal::new(max_velocity);
 
+        let pins = [&mut pin1];
+        let stepper = Stepper::from_driver(Generic::new(steps))
+            .enable_direction_control((), Direction::Backward, &mut dir_timer)
+            .expect("setting dir control to work")
+            .enable_step_control(pins);
         let mut stepper =
-            Stepper::from_driver(Generic::new([&mut pin1], steps))
-                .enable_direction_control(
-                    (),
-                    Direction::Backward,
-                    &mut dir_timer,
-                )
-                .expect("setting dir control to work")
-                .enable_step_control(())
-                .enable_motion_control((dir_timer, profile, DelayToTicks));
+            stepper.enable_motion_control((dir_timer, profile, NoDelay));
 
         let num_steps = 10;
 
@@ -534,8 +503,8 @@ mod test {
     //     }
     // }
 
-    #[test]
-    pub fn release_coils() {
+    #[tokio::test]
+    pub async fn release_coils() {
         let mut pin = MockPin::new();
 
         // Steps have been programmed to only send HIGH
@@ -544,21 +513,23 @@ mod test {
         // Low signal is expected out of the release calls
         pin.expect_set_low().times(2).returning(|| Ok(()));
 
-        let driver = Generic::new([&mut pin], [1, 1]);
+        let pins = [&mut pin];
+        let driver = Generic::new([1, 1]);
 
-        let mut stepper = Stepper::from_driver(driver).enable_step_control(());
-        let timer = &mut OkTimer::<1>::new();
-        stepper.step(timer).wait().expect("stepping failed");
+        let mut stepper =
+            Stepper::from_driver(driver).enable_step_control(pins);
+        let mut delay = NoDelay;
+        stepper.step(&mut delay).await.expect("stepping failed");
         assert_eq!(stepper.driver().step, Some(1));
         stepper
-            .release_coils(timer)
-            .wait()
+            .release_coils(&mut delay)
+            .await
             .expect("Coil release did not work");
         // Expecting step position not to change
         assert_eq!(stepper.driver().step, Some(1));
         stepper
-            .release_coils(timer)
-            .wait()
+            .release_coils(&mut delay)
+            .await
             .expect("Coil release did not work");
         assert_eq!(stepper.driver().step, Some(1));
     }

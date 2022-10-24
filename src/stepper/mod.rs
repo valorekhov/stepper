@@ -17,11 +17,11 @@ pub use self::{
 use core::convert::Infallible;
 
 use embedded_hal::digital::ErrorType;
-use fugit::NanosDurationU32 as Nanoseconds;
 use fugit_timer::Timer as TimerTrait;
 pub use set_step_mode::SetStepModeFuture;
 
 use crate::stepper::legacy_future::LegacyFuture;
+use crate::traits::ReleaseCoils;
 use crate::{
     traits::{
         EnableDirectionControl, EnableMotionControl, EnableStepControl,
@@ -273,12 +273,12 @@ impl<Driver> Stepper<Driver> {
     /// This method is only available, if the driver/controller supports
     /// enabling step control. It might no longer be available, once step
     /// control has been enabled.
-    pub fn enable_step_control<Resources, const BUS_WIDTH: usize>(
+    pub fn enable_step_control<Resources>(
         self,
         res: Resources,
     ) -> Stepper<Driver::WithStepControl>
     where
-        Driver: EnableStepControl<Resources, BUS_WIDTH>,
+        Driver: EnableStepControl<Resources>,
     {
         Stepper {
             driver: self.driver.enable_step_control(res),
@@ -293,57 +293,41 @@ impl<Driver> Stepper<Driver> {
     ///
     /// You might need to call [`Stepper::enable_step_control`] to make this
     /// method available.
-    pub fn step<'r, Timer, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>(
+    pub fn step<'r, Resources>(
         &'r mut self,
-        timer: &'r mut Timer,
-    ) -> StepFuture<
-        RefMut<'r, Driver>,
-        RefMut<'r, Timer>,
-        TIMER_HZ,
-        STEP_BUS_WIDTH,
-    >
+        delay: &'r mut <Driver as Step>::Delay,
+    ) -> Driver::OutputStepFuture<'r>
     where
-        Driver: Step<STEP_BUS_WIDTH>,
-        Timer: TimerTrait<TIMER_HZ>,
+        Driver: Step,
     {
-        StepFuture::new(RefMut(&mut self.driver), RefMut(timer))
+        self.driver.step(delay)
     }
 
     /// Releases holding current on the motor coils
-    pub fn release_coils<
-        'r,
-        Timer,
-        const TIMER_HZ: u32,
-        const STEP_BUS_WIDTH: usize,
-    >(
+    pub fn release_coils<'r, Delay, const STEP_BUS_WIDTH: usize>(
         &'r mut self,
-        timer: &'r mut Timer,
-    ) -> StepFuture<
-        RefMut<'r, Driver>,
-        RefMut<'r, Timer>,
-        TIMER_HZ,
-        STEP_BUS_WIDTH,
-    >
+        delay: &'r mut Delay,
+    ) -> Driver::OutputStepFuture<'r>
     where
-        Driver: Step<STEP_BUS_WIDTH>,
-        Timer: TimerTrait<TIMER_HZ>,
+        Driver: ReleaseCoils<STEP_BUS_WIDTH> + Step,
     {
-        StepFuture::new(RefMut(&mut self.driver), RefMut(timer))
+        todo!();
+        //self.driver.release_coils()
     }
 
-    /// Returns the step pulse length of the wrapped driver/controller
-    ///
-    /// The pulse length is also available through the [`Step`] trait. This
-    /// method provides a more convenient way to access it.
-    ///
-    /// You might need to call [`Stepper::enable_step_control`] to make this
-    /// method available.
-    pub fn pulse_length<const BUS_WIDTH: usize>(&self) -> Nanoseconds
-    where
-        Driver: Step<BUS_WIDTH>,
-    {
-        Driver::PULSE_LENGTH
-    }
+    // /// Returns the step pulse length of the wrapped driver/controller
+    // ///
+    // /// The pulse length is also available through the [`Step`] trait. This
+    // /// method provides a more convenient way to access it.
+    // ///
+    // /// You might need to call [`Stepper::enable_step_control`] to make this
+    // /// method available.
+    // pub fn pulse_length<const BUS_WIDTH: usize>(&self) -> Nanoseconds
+    // where
+    //     Driver: Step<(), ()>,
+    // {
+    //     Driver::PULSE_LENGTH
+    // }
 
     /// Enable motion control
     ///
@@ -365,6 +349,7 @@ impl<Driver> Stepper<Driver> {
     /// might no longer be available, once motion control support has been
     /// enabled.
     pub fn enable_motion_control<
+        'r,
         Resources,
         const TIMER_HZ: u32,
         const STEP_BUS_WIDTH: usize,

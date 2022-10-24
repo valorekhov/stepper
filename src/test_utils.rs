@@ -1,6 +1,8 @@
 use core::convert::Infallible;
+use core::future::Ready;
 use embedded_hal::digital::blocking::OutputPin;
 use embedded_hal::digital::ErrorType;
+use embedded_hal_async::delay::DelayUs;
 use fugit::{TimerDurationU32, TimerInstantU32};
 use fugit_timer::Timer;
 use mockall::mock;
@@ -102,5 +104,24 @@ impl<const TIMER_HZ: u32> fugit_timer::Timer<TIMER_HZ> for OkTimer<TIMER_HZ> {
 
     fn wait(&mut self) -> nb::Result<(), Self::Error> {
         Ok(())
+    }
+}
+
+pub struct NoDelay;
+
+impl DelayUs for NoDelay {
+    type Error = ();
+    type DelayUsFuture<'a>
+    = Ready<Result<(), Self::Error>>  where Self: 'a,;
+
+    fn delay_us(&mut self, us: u32) -> Self::DelayUsFuture<'_> {
+        core::future::ready(Ok(()))
+    }
+
+    type DelayMsFuture<'a>
+    = Ready<Result<(), Self::Error>> where Self: 'a;
+
+    fn delay_ms(&mut self, ms: u32) -> Self::DelayMsFuture<'_> {
+        core::future::ready(Ok(()))
     }
 }

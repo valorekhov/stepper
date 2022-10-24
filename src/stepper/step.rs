@@ -1,12 +1,16 @@
-use core::task::Poll;
+use core::pin::Pin;
 
-use crate::stepper::legacy_future::LegacyFuture;
+use core::convert::Infallible;
+use core::future::Future;
+use core::task::Poll::{Pending, Ready};
+use core::task::{Context, Poll};
+
 use embedded_hal::digital::blocking::OutputPin;
-use embedded_hal::digital::ErrorType;
-use fugit::TimerDurationU32 as TimerDuration;
-use fugit_timer::Timer as TimerTrait;
+use embedded_hal_async::delay::DelayUs;
+use fugit::NanosDurationU32;
+use futures::pin_mut;
 
-use crate::traits::{OutputPinAction, Step};
+use crate::traits::OutputPinAction;
 
 use super::SignalError;
 
@@ -18,23 +22,48 @@ use super::SignalError;
 ///
 /// [`Stepper::step`]: crate::Stepper::step
 #[must_use]
+#[pin_project::pin_project]
 pub struct StepFuture<
-    Driver,
-    Timer,
-    const TIMER_HZ: u32,
+    'r,
+    Delay: DelayUs + 'r,
+    OutputPin,
     const STEP_BUS_WIDTH: usize,
 > {
-    driver: Driver,
-    timer: Timer,
-    state: State,
+    leading: [OutputPinAction<OutputPin>; STEP_BUS_WIDTH],
+    duration: NanosDurationU32,
+    trailing: [OutputPinAction<OutputPin>; STEP_BUS_WIDTH],
+    delay: Delay,
+    state: State<Pin<&'r mut Delay::DelayUsFuture<'r>>>,
 }
 
-impl<Driver, Timer, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>
-    StepFuture<Driver, Timer, TIMER_HZ, STEP_BUS_WIDTH>
-where
-    Driver: Step<STEP_BUS_WIDTH>,
-    Timer: TimerTrait<TIMER_HZ>,
+impl<'r, Delay: DelayUs, OutputPin, const STEP_BUS_WIDTH: usize>
+    StepFuture<'r, Delay, OutputPin, STEP_BUS_WIDTH>
 {
+    // /// Create new instance of `StepFuture`
+    // ///
+    // /// This constructor is public to provide maximum flexibility for
+    // /// non-standard use cases. Most users can ignore this and just use
+    // /// [`Stepper::step`] instead.
+    // ///
+    // /// [`Stepper::step`]: crate::Stepper::step
+    // pub fn new_from_timer<Timer, const TIMER_HZ: u32>(
+    //     leading: [OutputPinAction<OutputPin>; STEP_BUS_WIDTH],
+    //     duration: NanosDurationU32,
+    //     trailing: [OutputPinAction<OutputPin>; STEP_BUS_WIDTH],
+    //     timer: Timer,
+    // ) -> Self
+    // where
+    //     Timer: TimerTrait<TIMER_HZ>,
+    // {
+    //     Self {
+    //         leading,
+    //         duration,
+    //         trailing,
+    //         delay: AsyncDelay::from_timer(timer),
+    //         state: State::Initial,
+    //     }
+    // }
+
     /// Create new instance of `StepFuture`
     ///
     /// This constructor is public to provide maximum flexibility for
@@ -42,37 +71,55 @@ where
     /// [`Stepper::step`] instead.
     ///
     /// [`Stepper::step`]: crate::Stepper::step
-    pub fn new(driver: Driver, timer: Timer) -> Self {
-        Self {
-            driver,
-            timer,
+    pub fn new_from_delay(
+        leading: [OutputPinAction<&'r mut OutputPin>; STEP_BUS_WIDTH],
+        duration: NanosDurationU32,
+        trailing: [OutputPinAction<&'r mut OutputPin>; STEP_BUS_WIDTH],
+        delay: &'r mut Delay,
+    ) -> StepFuture<'r, &'r mut Delay, &'r mut OutputPin, STEP_BUS_WIDTH> {
+        StepFuture::<'r, &'r mut Delay, &'r mut OutputPin, STEP_BUS_WIDTH> {
+            leading,
+            duration,
+            trailing,
+            delay,
             state: State::Initial,
         }
     }
 
     /// Drop the future and release the resources that were moved into it
-    pub fn release(self) -> (Driver, Timer) {
-        (self.driver, self.timer)
+    pub fn release(
+        self,
+    ) -> (
+        [OutputPinAction<OutputPin>; STEP_BUS_WIDTH],
+        [OutputPinAction<OutputPin>; STEP_BUS_WIDTH],
+        Delay,
+    ) {
+        (self.leading, self.trailing, self.delay)
     }
 }
 
-impl<Driver, Timer, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>
-    LegacyFuture for StepFuture<Driver, Timer, TIMER_HZ, STEP_BUS_WIDTH>
-where
-    Driver: Step<STEP_BUS_WIDTH>,
-    Timer: TimerTrait<TIMER_HZ>,
-{
-    type DriverError = Driver::Error;
-    type TimerError = Timer::Error;
+// impl<OutputPin, Delay, const STEP_BUS_WIDTH: usize> IntoFuture
+//     for StepFuture<OutputPin, Delay, STEP_BUS_WIDTH>
+// where
+//     Delay: DelayUs,
+// {
+//     type Output = <Self as LegacyFuture>::FutureOutput;
+//     type IntoFuture =
+//         WrappedLegacyFuture<StepFuture<OutputPin, Delay, STEP_BUS_WIDTH>>;
+//
+//     fn into_future(self) -> Self::IntoFuture {
+//         WrappedLegacyFuture::new(self)
+//     }
+// }
 
-    type FutureOutput = Result<
-        (),
-        SignalError<
-            Driver::Error,
-            <Driver::StepPin as ErrorType>::Error,
-            Timer::Error,
-        >,
-    >;
+impl<'r, Delay: DelayUs, StepPin, const STEP_BUS_WIDTH: usize> Future
+    for StepFuture<'r, Delay, StepPin, STEP_BUS_WIDTH>
+where
+    StepPin: OutputPin,
+    Delay: DelayUs,
+{
+    type Output =
+        Result<(), SignalError<Infallible, StepPin::Error, Delay::Error>>;
 
     /// Poll the future
     ///
@@ -85,14 +132,11 @@ where
     /// calling it at a high frequency (see [`Self::wait`]) until the operation
     /// completes, or set up an interrupt that fires once the timer finishes
     /// counting down, and call this method again once it does.
-    fn poll(&mut self) -> Poll<Self::FutureOutput> {
-        match self.state {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match &self.state {
             State::Initial => {
                 // Start step action
-                let mut pin_actions = self
-                    .driver
-                    .step_leading()
-                    .map_err(SignalError::PinUnavailable)?;
+                let mut pin_actions = &self.leading;
 
                 for pin_action in pin_actions.iter_mut() {
                     let action = match pin_action {
@@ -106,22 +150,16 @@ where
                     }
                 }
 
-                let ticks: TimerDuration<TIMER_HZ> =
-                    Driver::PULSE_LENGTH.convert();
-
-                self.timer.start(ticks).map_err(SignalError::Timer)?;
-
-                self.state = State::PulseStarted;
-                Poll::Pending
+                let fut = self.delay.delay_us(self.duration.to_micros());
+                pin_mut!(fut);
+                self.state = State::PulseStarted(fut);
+                Pending
             }
-            State::PulseStarted => {
-                match self.timer.wait() {
-                    Ok(()) => {
+            State::PulseStarted(pinned_fut) => {
+                match pinned_fut.poll(cx) {
+                    Ready(Ok(())) => {
                         // End step action
-                        let mut pin_actions = self
-                            .driver
-                            .step_trailing()
-                            .map_err(SignalError::PinUnavailable)?;
+                        let mut pin_actions = &self.trailing;
 
                         for pin_action in pin_actions.iter_mut() {
                             let action = match pin_action {
@@ -139,22 +177,23 @@ where
                         }
 
                         self.state = State::Finished;
-                        Poll::Ready(Ok(()))
+                        Ready(Ok(()))
                     }
-                    Err(nb::Error::Other(err)) => {
+                    Ready(Err(err)) => {
                         self.state = State::Finished;
-                        Poll::Ready(Err(SignalError::Timer(err)))
+                        Ready(Err(SignalError::Timer(err)))
                     }
-                    Err(nb::Error::WouldBlock) => Poll::Pending,
+                    Pending => Pending,
+                    _ => panic!("Unhandled branch of logic while working with the Delay/Timer")
                 }
             }
-            State::Finished => Poll::Ready(Ok(())),
+            State::Finished => Ready(Ok(())),
         }
     }
 }
 
-enum State {
+enum State<Fut> {
     Initial,
-    PulseStarted,
+    PulseStarted(Fut),
     Finished,
 }

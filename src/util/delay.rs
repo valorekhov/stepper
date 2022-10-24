@@ -5,7 +5,47 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use embedded_hal_async::delay::DelayUs;
-use fugit::TimerDurationU32;
+use fugit::{TimerDurationU32, TimerInstantU32};
+
+/// Wraps a `embedded_hal_async::delay::DelayUs` to provide `fugit_timer::Timer`functionality
+#[pin_project::pin_project]
+pub struct TimerFromAsyncDelay<'a, Delay: DelayUs + 'a, const TIMER_HZ: u32> {
+    delay: Delay,
+    fut: Option<<Delay as DelayUs>::DelayUsFuture<'a>>,
+}
+
+impl<'a, Delay: DelayUs + 'a, const TIMER_HZ: u32>
+    TimerFromAsyncDelay<'a, Delay, TIMER_HZ>
+{
+    pub fn new(delay: Delay) -> Self {
+        Self { delay, fut: None }
+    }
+}
+
+impl<'a, Delay: DelayUs + Unpin, const TIMER_HZ: u32>
+    fugit_timer::Timer<TIMER_HZ> for TimerFromAsyncDelay<'a, Delay, TIMER_HZ>
+{
+    type Error = ();
+
+    fn now(&mut self) -> TimerInstantU32<TIMER_HZ> {
+        todo!()
+    }
+
+    fn start(
+        &mut self,
+        duration: TimerDurationU32<TIMER_HZ>,
+    ) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn cancel(&mut self) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn wait(&mut self) -> nb::Result<(), Self::Error> {
+        todo!()
+    }
+}
 
 /// Wraps an instance of `fugit_timer::Timer` to provide `embedded_hal_async::delay::DelayUs` functionality
 #[pin_project::pin_project]

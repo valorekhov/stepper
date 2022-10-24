@@ -21,11 +21,22 @@
 //! [`Stepper`]: crate::Stepper
 
 use crate::Direction;
+use core::future::Future;
 use embedded_hal::digital::blocking::OutputPin;
 use embedded_hal::digital::PinState;
 use fugit::NanosDurationU32 as Nanoseconds;
+use fugit_timer::Delay;
 
 use crate::step_mode::StepMode;
+
+/// To satisfy https://github.com/rust-lang/rust/issues/87479
+pub trait OutputStepFutureItem {
+    /// The type of result being returned
+    type OutputStepFutureResult;
+
+    /// The error that can occur while performing a step
+    type OutputStepFutureError;
+}
 
 /// Enable microstepping mode control for a driver
 ///
@@ -116,45 +127,46 @@ pub enum OutputPinAction<Pin> {
 ///
 /// The `Resources` type parameter defines the hardware resources required for
 /// step control.
-pub trait EnableStepControl<Resources, const STEP_BUS_WIDTH: usize> {
+pub trait EnableStepControl<Resources> {
     /// The type of the driver after step control has been enabled
-    type WithStepControl: Step<STEP_BUS_WIDTH>;
+    type WithStepControl: Step;
 
     /// Enable step control
     fn enable_step_control(self, res: Resources) -> Self::WithStepControl;
 }
 
-/// Implemented by drivers that support controlling the STEP signal
-pub trait Step<const STEP_BUS_WIDTH: usize> {
-    /// The minimum length of a STEP pulse
-    const PULSE_LENGTH: Nanoseconds;
+/// Implemented by drivers which handle firing of pins independently
 
-    // The following compiles on nightly allowing to refer as Self::BUS_WIDTH,
-    // however, on stable I could only make it work as a trait const generic, resulting in
-    // sprawl of STEP_BUS_WIDTH all over the code base
+pub trait Step {
     // const BUS_WIDTH: usize = 1;
 
-    /// The type of the STEP pin(s)
-    type StepPin: OutputPin;
+    /// "Convenience" type for implementing code which needs to refer to the same
+    /// type in step(Delay) and also in any concrete types configured on OutputStepFuture
 
-    /// The error that can occur while accessing the STEP pin(s)
-    type Error;
+    type Delay;
 
-    /// Provides access to the STEP pins and associated Low/High state for the leading edge
-    fn step_leading(
-        &mut self,
-    ) -> Result<
-        [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
-        Self::Error,
-    >;
+    /// The type of result being returned
+    type OutputStepFutureResult;
 
-    /// Provides access to the STEP pins and associated Low/High state for the leading edge
-    fn step_trailing(
-        &mut self,
-    ) -> Result<
-        [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
-        Self::Error,
-    >;
+    /// The error that can occur while performing a step
+    type OutputStepFutureError;
+
+    /// The output future type
+    type OutputStepFuture<'r>: Future<
+        Output = Result<
+            Self::OutputStepFutureResult,
+            Self::OutputStepFutureError,
+        >,
+    >
+    where
+        Self: 'r,
+        Self::Delay: 'r;
+
+    /// Performs a single step per driver's specific logic
+    fn step<'r>(
+        &'r mut self,
+        delay: &'r mut Self::Delay,
+    ) -> Self::OutputStepFuture<'r>;
 }
 
 /// Implemented by drivers that support controlling the STEP signal

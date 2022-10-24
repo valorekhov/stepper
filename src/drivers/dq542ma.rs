@@ -18,7 +18,7 @@ use fugit::NanosDurationU32 as Nanoseconds;
 
 use crate::traits::{
     EnableDirectionControl, EnableStepControl, OutputPinAction, SetDirection,
-    Step as StepTrait,
+    Step as StepTrait, StepLegacy,
 };
 
 const STEP_PIN_BUS_WIDTH: usize = 1;
@@ -85,7 +85,7 @@ where
     }
 }
 
-impl<Step, Dir, OutputPinError> EnableStepControl<Step, STEP_PIN_BUS_WIDTH>
+impl<Step, Dir, OutputPinError, Delay> EnableStepControl<Step, Delay>
     for DQ542MA<(), (), Dir>
 where
     Step: OutputPin<Error = OutputPinError>,
@@ -101,7 +101,7 @@ where
     }
 }
 
-impl<Step, Dir, OutputPinError> StepTrait<STEP_PIN_BUS_WIDTH>
+impl<Step, Dir, OutputPinError> StepLegacy<STEP_PIN_BUS_WIDTH>
     for DQ542MA<(), Step, Dir>
 where
     Step: OutputPin<Error = OutputPinError>,

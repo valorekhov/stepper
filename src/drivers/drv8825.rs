@@ -10,9 +10,11 @@
 //! [embedded-hal]: https://crates.io/crates/embedded-hal
 
 use core::convert::Infallible;
+use core::marker::PhantomData;
 
 use embedded_hal::digital::PinState::{High, Low};
 use embedded_hal::digital::{blocking::OutputPin, PinState};
+use embedded_hal_async::delay::DelayUs;
 use fugit::NanosDurationU32 as Nanoseconds;
 
 use crate::traits::OutputPinAction;
@@ -20,9 +22,9 @@ use crate::{
     step_mode::StepMode32,
     traits::{
         EnableDirectionControl, EnableStepControl, EnableStepModeControl,
-        SetDirection, SetStepMode, Step as StepTrait,
+        SetDirection, SetStepMode, Step as StepAsyncTrait,
     },
-    Direction,
+    Direction, SignalError, StepFuture,
 };
 
 const STEP_PIN_BUS_WIDTH: usize = 1;
@@ -32,8 +34,18 @@ const STEP_PIN_BUS_WIDTH: usize = 1;
 /// Users are not expected to use this API directly, except to create an
 /// instance using [`DRV8825::new`]. Please check out
 /// [`Stepper`](crate::Stepper) instead.
-pub struct DRV8825<Enable, Fault, Sleep, Reset, Mode0, Mode1, Mode2, Step, Dir>
-{
+pub struct DRV8825<
+    Enable,
+    Fault,
+    Sleep,
+    Reset,
+    Mode0,
+    Mode1,
+    Mode2,
+    Step,
+    Dir,
+    Delay,
+> {
     enable: Enable,
     fault: Fault,
     sleep: Sleep,
@@ -43,9 +55,10 @@ pub struct DRV8825<Enable, Fault, Sleep, Reset, Mode0, Mode1, Mode2, Step, Dir>
     mode2: Mode2,
     step: Step,
     dir: Dir,
+    _maker: PhantomData<Delay>,
 }
 
-impl DRV8825<(), (), (), (), (), (), (), (), ()> {
+impl DRV8825<(), (), (), (), (), (), (), (), (), ()> {
     /// Create a new instance of `DRV8825`
     pub fn new() -> Self {
         Self {
@@ -58,13 +71,14 @@ impl DRV8825<(), (), (), (), (), (), (), (), ()> {
             mode2: (),
             step: (),
             dir: (),
+            _maker: PhantomData::default(),
         }
     }
 }
 
 impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError>
     EnableStepModeControl<(Reset, Mode0, Mode1, Mode2)>
-    for DRV8825<(), (), (), (), (), (), (), Step, Dir>
+    for DRV8825<(), (), (), (), (), (), (), Step, Dir, ()>
 where
     Reset: OutputPin<Error = OutputPinError>,
     Mode0: OutputPin<Error = OutputPinError>,
@@ -72,7 +86,7 @@ where
     Mode2: OutputPin<Error = OutputPinError>,
 {
     type WithStepModeControl =
-        DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir>;
+        DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir, ()>;
 
     fn enable_step_mode_control(
         self,
@@ -88,12 +102,13 @@ where
             mode2,
             step: self.step,
             dir: self.dir,
+            _maker: self._maker,
         }
     }
 }
 
 impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError> SetStepMode
-    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir>
+    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir, ()>
 where
     Reset: OutputPin<Error = OutputPinError>,
     Mode0: OutputPin<Error = OutputPinError>,
@@ -141,12 +156,12 @@ where
 
 impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError>
     EnableDirectionControl<Dir>
-    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, ()>
+    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, (), ()>
 where
     Dir: OutputPin<Error = OutputPinError>,
 {
     type WithDirectionControl =
-        DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir>;
+        DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir, ()>;
 
     fn enable_direction_control(self, dir: Dir) -> Self::WithDirectionControl {
         DRV8825 {
@@ -159,12 +174,13 @@ where
             mode2: self.mode2,
             step: self.step,
             dir,
+            _maker: self._maker,
         }
     }
 }
 
 impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError> SetDirection
-    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir>
+    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir, ()>
 where
     Dir: OutputPin<Error = OutputPinError>,
 {
@@ -189,14 +205,15 @@ where
     }
 }
 
-impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError>
-    EnableStepControl<Step, STEP_PIN_BUS_WIDTH>
-    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, (), Dir>
+impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError, Delay>
+    EnableStepControl<Step>
+    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, (), Dir, Delay>
 where
     Step: OutputPin<Error = OutputPinError>,
+    Delay: DelayUs,
 {
     type WithStepControl =
-        DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir>;
+        DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir, Delay>;
 
     fn enable_step_control(self, step: Step) -> Self::WithStepControl {
         DRV8825 {
@@ -209,38 +226,49 @@ where
             mode2: self.mode2,
             step,
             dir: self.dir,
+            _maker: PhantomData::default(),
         }
     }
 }
 
-impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError>
-    StepTrait<STEP_PIN_BUS_WIDTH>
-    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir>
+// impl<Delay, Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError>
+//     OutputStepFutureItem
+//     for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir>
+// where
+//     Step: OutputPin<Error = OutputPinError>,
+//     Delay: DelayUs,
+// {
+//     type OutputStepFutureResult = ();
+//     type OutputStepFutureError =
+//         SignalError<Infallible, OutputPinError, Delay::Error>;
+// }
+
+impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError, Delay>
+    StepAsyncTrait
+    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir, Delay>
 where
     Step: OutputPin<Error = OutputPinError>,
+    Delay: DelayUs,
 {
-    // 7.6 Timing Requirements (page 7)
-    // https://www.ti.com/lit/ds/symlink/drv8825.pdf
-    const PULSE_LENGTH: Nanoseconds = Nanoseconds::from_ticks(1900);
+    type Delay = Delay;
 
-    type StepPin = Step;
-    type Error = Infallible;
+    type OutputStepFutureResult = ();
+    type OutputStepFutureError =
+        SignalError<Infallible, OutputPinError, Delay::Error>;
 
-    fn step_leading(
-        &mut self,
-    ) -> Result<
-        [OutputPinAction<&mut Self::StepPin>; STEP_PIN_BUS_WIDTH],
-        Self::Error,
-    > {
-        Ok([OutputPinAction::Set(&mut self.step, High)])
-    }
+    type OutputStepFuture<'r> = StepFuture<'r, &'r mut Delay, &'r mut Step, STEP_PIN_BUS_WIDTH> where Self: 'r;
 
-    fn step_trailing(
-        &mut self,
-    ) -> Result<
-        [OutputPinAction<&mut Self::StepPin>; STEP_PIN_BUS_WIDTH],
-        Self::Error,
-    > {
-        Ok([OutputPinAction::Set(&mut self.step, Low)])
+    fn step<'r>(
+        &'r mut self,
+        delay: &'r mut Delay,
+    ) -> Self::OutputStepFuture<'r> {
+        StepFuture::new_from_delay(
+            [OutputPinAction::Set(&mut self.step, High)],
+            // 7.6 Timing Requirements (page 7)
+            // https://www.ti.com/lit/ds/symlink/drv8825.pdf
+            Nanoseconds::from_ticks(1900),
+            [OutputPinAction::Set(&mut self.step, High)],
+            delay,
+        )
     }
 }

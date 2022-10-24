@@ -9,7 +9,6 @@ pub use crate::stepper::{
 };
 use core::convert::Infallible;
 use embedded_hal::digital::ErrorType;
-use fugit::NanosDurationU32 as Nanoseconds;
 use fugit_timer::Timer as TimerTrait;
 
 use crate::stepper::legacy_future::LegacyFuture;
@@ -18,7 +17,7 @@ pub use crate::stepper::set_step_mode::SetStepModeFuture;
 use crate::{
     traits::{
         EnableDirectionControl, EnableMotionControl, EnableStepControl,
-        EnableStepModeControl, MotionControl, SetDirection, SetStepMode, Step,
+        EnableStepModeControl, MotionControl, SetDirection, SetStepMode,
     },
     util::ref_mut::RefMut,
     Direction,
@@ -97,6 +96,8 @@ use crate::{
 /// an implementation of [`fugit_timer::Timer`].
 ///
 
+// TODO: Remove this module
+#[must_use]
 pub struct Stepper<Driver> {
     driver: Driver,
 }
@@ -191,8 +192,6 @@ impl<Driver> Stepper<Driver> {
         step_mode: Driver::StepMode,
         timer: &'r mut Timer,
     ) -> WrappedLegacyFuture<
-        Driver,
-        Timer,
         SetStepModeFuture<RefMut<'r, Driver>, RefMut<'r, Timer>, TIMER_HZ>,
     >
     where
@@ -258,8 +257,6 @@ impl<Driver> Stepper<Driver> {
         direction: Direction,
         timer: &'r mut Timer,
     ) -> WrappedLegacyFuture<
-        Driver,
-        Timer,
         SetDirectionFuture<RefMut<'r, Driver>, RefMut<'r, Timer>, TIMER_HZ>,
     >
     where
@@ -287,12 +284,12 @@ impl<Driver> Stepper<Driver> {
     /// This method is only available, if the driver/controller supports
     /// enabling step control. It might no longer be available, once step
     /// control has been enabled.
-    pub fn enable_step_control<Resources, const STEP_BUS_WIDTH: usize>(
+    pub fn enable_step_control<Resources>(
         self,
         res: Resources,
     ) -> Stepper<Driver::WithStepControl>
     where
-        Driver: EnableStepControl<Resources, STEP_BUS_WIDTH>,
+        Driver: EnableStepControl<Resources>,
     {
         Stepper {
             driver: self.driver.enable_step_control(res),
@@ -308,28 +305,26 @@ impl<Driver> Stepper<Driver> {
     /// You might need to call [`Stepper::enable_step_control`] to make this
     /// method available.
 
-    pub fn step<'r, Timer, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>(
-        &'r mut self,
-        timer: &'r mut Timer,
-    ) -> WrappedLegacyFuture<
-        Driver,
-        Timer,
-        StepFuture<
-            RefMut<'r, Driver>,
-            RefMut<'r, Timer>,
-            TIMER_HZ,
-            STEP_BUS_WIDTH,
-        >,
-    >
-    where
-        Driver: Step<STEP_BUS_WIDTH>,
-        Timer: TimerTrait<TIMER_HZ>,
-    {
-        WrappedLegacyFuture::new(StepFuture::new(
-            RefMut(&mut self.driver),
-            RefMut(timer),
-        ))
-    }
+    // pub fn step<'r, Timer, const TIMER_HZ: u32, const STEP_BUS_WIDTH: usize>(
+    //     &'r mut self,
+    //     timer: &'r mut Timer,
+    // ) -> WrappedLegacyFuture<
+    //     StepFuture<
+    //         RefMut<'r, Driver>,
+    //         RefMut<'r, Timer>,
+    //         TIMER_HZ,
+    //         STEP_BUS_WIDTH,
+    //     >,
+    // >
+    // where
+    //     Driver: Step<STEP_BUS_WIDTH>,
+    //     Timer: TimerTrait<TIMER_HZ>,
+    // {
+    //     WrappedLegacyFuture::new(StepFuture::new(
+    //         RefMut(&mut self.driver),
+    //         RefMut(timer),
+    //     ))
+    // }
 
     // TODO: Uncomment the below once the drivers implement ASYNC traits
     // pub fn step<'r, Delay, Resources, const STEP_BUS_WIDTH: usize>(
@@ -350,12 +345,13 @@ impl<Driver> Stepper<Driver> {
     ///
     /// You might need to call [`Stepper::enable_step_control`] to make this
     /// method available.
-    pub fn pulse_length<const BUS_WIDTH: usize>(&self) -> Nanoseconds
-    where
-        Driver: Step<BUS_WIDTH>,
-    {
-        Driver::PULSE_LENGTH
-    }
+
+    // pub fn pulse_length<const BUS_WIDTH: usize>(&self) -> Nanoseconds
+    // where
+    //     Driver: Step<BUS_WIDTH>,
+    // {
+    //     Driver::PULSE_LENGTH
+    // }
 
     /// Enable motion control
     ///
@@ -377,6 +373,7 @@ impl<Driver> Stepper<Driver> {
     /// might no longer be available, once motion control support has been
     /// enabled.
     pub fn enable_motion_control<
+        'r,
         Resources,
         const TIMER_HZ: u32,
         const STEP_BUS_WIDTH: usize,
@@ -412,7 +409,7 @@ impl<Driver> Stepper<Driver> {
         &mut self,
         max_velocity: Driver::Velocity,
         target_step: i32,
-    ) -> WrappedLegacyFuture<Driver, (), MoveToFuture<RefMut<Driver>>>
+    ) -> WrappedLegacyFuture<MoveToFuture<RefMut<Driver>>>
     where
         Driver: MotionControl,
     {

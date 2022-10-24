@@ -22,15 +22,6 @@ use embedded_hal_async::delay::DelayUs;
 /// Placeholder trait to track Async functionality being enabled on a driver
 pub trait DelayAsyncEnabled<Delay: DelayUs> {}
 
-/// To satisfy https://github.com/rust-lang/rust/issues/87479
-pub trait OutputFutureItem {
-    /// The type of result being returned
-    type OutputFutResult;
-
-    /// The error that can occur while performing a step
-    type Error;
-}
-
 /// Implemented by drivers that support controlling the DIR signal
 pub trait SetDelayAsync {
     /// "Async Enabled" placeholder type
@@ -67,34 +58,32 @@ where
     ) -> Self::OutputFut<'r>;
 }
 
-/// Implemented by drivers which handle firing of pins independently
-pub trait StepAsync<Resources, Delay, const STEP_BUS_WIDTH: usize>:
-    OutputFutureItem
-where
-    Self: EnableStepControl<Resources, STEP_BUS_WIDTH>, /*+ DelayAsyncEnabled<Delay>*/
-    Delay: DelayUs,
-{
-    /// The output future type is defined here
-    type OutputFut<'r>: Future<
-        Output = Result<Self::OutputFutResult, Self::Error>,
-    >
-    where
-        Self: 'r,
-        Delay: 'r;
-
-    /// Performs a single step per driver's specific logic
-    fn step_async<'r>(
-        &'r mut self,
-        delay: &'r mut Delay,
-    ) -> Self::OutputFut<'r>;
-}
+// /// Implemented by drivers which handle firing of pins independently
+// pub trait StepAsync<Resources, Delay, const STEP_BUS_WIDTH: usize>:
+//     OutputFutureItem
+// where
+//     Self: EnableStepControl<Resources, STEP_BUS_WIDTH>, /*+ DelayAsyncEnabled<Delay>*/
+//     Delay: DelayUs,
+// {
+//     /// The output future type is defined here
+//     type OutputFut<'r>: Future<
+//         Output = Result<Self::OutputFutResult, Self::Error>,
+//     >
+//     where
+//         Self: 'r,
+//         Delay: 'r;
+//
+//     /// Performs a single step per driver's specific logic
+//     fn step_async<'r>(
+//         &'r mut self,
+//         delay: &'r mut Delay,
+//     ) -> Self::OutputFut<'r>;
+// }
 
 /// Implemented by drivers which have logic allowing to release motor coils
-pub trait ReleaseAsync<Resources, Delay, const STEP_BUS_WIDTH: usize>
+pub trait ReleaseAsync<Resources>
 where
-    Self:
-        EnableStepControl<Resources, STEP_BUS_WIDTH> + DelayAsyncEnabled<Delay>,
-    Delay: DelayUs,
+    Self: EnableStepControl<Resources>,
 {
     /// The output future type
     type OutputFut: Future<Output = Result<(), Self::Error>>;

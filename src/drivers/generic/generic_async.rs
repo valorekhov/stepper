@@ -1,54 +1,52 @@
 use crate::drivers::generic::{Generic, GenericStepError};
-use crate::traits::EnableStepControl;
-use crate::traits_async::{OutputFutureItem, StepAsync};
+use crate::traits::{OutputStepFutureItem, Step as StepAsync};
+use crate::SignalError;
+use core::convert::Infallible;
 use core::fmt::Debug;
 use core::future::Future;
 use embedded_hal::digital::blocking::OutputPin;
 use embedded_hal_async::delay::DelayUs;
 
-/// Async extensions for the Generic driver
+/// Experimental Async implementations for the Generic driver
 ///
 /// Users are not expected to use this API directly, except to create an
-/// instance using [`QuadLine::new`]. Please check out
+/// instance using [`Generic::new`]. Please check out
 /// [`Stepper`](crate::Stepper) instead.
 
-impl<
-        LinePin,
-        OutputPinError,
-        const STEP_BUS_WIDTH: usize,
-        const NUM_STEPS: usize,
-    > OutputFutureItem for Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>
+impl<Pins, OutputPinError, const NUM_STEPS: usize, Delay> OutputStepFutureItem
+    for Generic<Pins, NUM_STEPS, Delay>
 where
-    LinePin: OutputPin<Error = OutputPinError>,
+    Pins: OutputPin<Error = OutputPinError>,
     OutputPinError: Debug,
 {
-    type OutputFutResult = ();
-    type Error = GenericStepError;
+    type OutputStepFutureResult = ();
+    type OutputStepFutureError = GenericStepError;
 }
 
 impl<
         LinePin,
         Delay,
         OutputPinError,
-        Resources,
         const STEP_BUS_WIDTH: usize,
         const NUM_STEPS: usize,
-    > StepAsync<Resources, Delay, STEP_BUS_WIDTH>
-    for Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>
+    > StepAsync for Generic<[LinePin; STEP_BUS_WIDTH], NUM_STEPS, Delay>
 where
-    Self: EnableStepControl<Resources, STEP_BUS_WIDTH>,
     LinePin: OutputPin<Error = OutputPinError>,
-    // TODO: Revisit static?
-    Delay: DelayUs + 'static,
     OutputPinError: Debug,
+    Delay: DelayUs,
 {
-    type OutputFut<'r>
-    = impl Future<Output = Result<Self::OutputFutResult, Self::Error>> where Self: 'r;
+    type Delay = Delay;
+    type OutputStepFutureResult = ();
+    type OutputStepFutureError =
+        SignalError<Infallible, OutputPinError, Delay::Error>;
 
-    fn step_async<'r>(
+    type OutputStepFuture<'r>
+    = impl Future<Output = Result<Self::OutputStepFutureResult, Self::OutputStepFutureError>> where Self: 'r;
+
+    fn step<'r>(
         self: &'r mut Self,
         delay: &'r mut Delay,
-    ) -> Self::OutputFut<'r> {
+    ) -> Self::OutputStepFuture<'r> {
         // unable to express the same as an inline async{} block due to https://github.com/rust-lang/rust/issues/65442
         // moving into a call of a an async function instead
         self.step_async_int(delay)
@@ -58,17 +56,19 @@ where
 impl<
         LinePin,
         OutputPinError,
+        Delay,
         const STEP_BUS_WIDTH: usize,
         const NUM_STEPS: usize,
-    > Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>
+    > Generic<[LinePin; STEP_BUS_WIDTH], NUM_STEPS, Delay>
 where
     LinePin: OutputPin<Error = OutputPinError>,
     OutputPinError: Debug,
+    Delay: DelayUs,
 {
-    async fn step_async_int<'d, Delay: DelayUs>(
+    async fn step_async_int<'d>(
         &mut self,
         delay: &'d mut Delay,
-    ) -> Result<(), GenericStepError> {
+    ) -> Result<(), SignalError<Infallible, OutputPinError, Delay::Error>> {
         let mut current_step = self.step.unwrap_or_else(|| 0) as usize;
 
         let firing_sequence =
@@ -152,9 +152,10 @@ where
 #[cfg(test)]
 mod test {
     use crate::drivers::generic::Generic;
-    use crate::stepper::asynch::Stepper;
+    use crate::stepper::Stepper;
     use crate::test_utils::MockPin;
     use crate::test_utils::SysClockTimer;
+    use crate::util::delay::AsyncDelay;
     use crate::Direction;
 
     #[tokio::test]
@@ -165,17 +166,22 @@ mod test {
         pin1.expect_set_low().return_once(|| Ok(()));
         pin2.expect_set_high().return_once(|| Ok(()));
 
-        let mut timer = SysClockTimer::<1000_u32>::new();
+        let mut dir_control_timer = SysClockTimer::<1000_u32>::new();
+        let mut delay =
+            AsyncDelay::from_timer(SysClockTimer::<1000_u32>::new());
 
-        let mut stepper = Stepper::from_driver(Generic::new(
-            [&mut pin1, &mut pin2],
-            [0b01_u8, 0b10_u8],
-        ))
-        .enable_direction_control((), Direction::Forward, &mut timer)
-        .expect("direction setting failed")
-        .enable_step_control(());
+        let pins = [&mut pin1, &mut pin2];
+        let dir_control_stepper =
+            Stepper::from_driver(Generic::new([0b01_u8, 0b10_u8]))
+                .enable_direction_control(
+                    (),
+                    Direction::Forward,
+                    &mut dir_control_timer,
+                )
+                .expect("direction setting failed");
+        let mut stepper = dir_control_stepper.enable_step_control(pins);
 
-        let res = stepper.step(&mut timer).await;
+        let res = stepper.step(&mut delay).await;
         res.unwrap();
         assert_eq!(stepper.driver().step, Some(1));
     }
