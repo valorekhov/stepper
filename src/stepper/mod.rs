@@ -1,5 +1,3 @@
-#[cfg(feature = "async")]
-pub(crate) mod asynch;
 mod error;
 pub(crate) mod legacy_future;
 mod move_to;
@@ -7,17 +5,18 @@ mod set_direction;
 pub(crate) mod set_step_mode;
 mod step;
 
+use core::borrow::BorrowMut;
 pub use self::{
     error::{Error, SignalError},
     move_to::MoveToFuture,
     set_direction::SetDirectionFuture,
-    step::StepFuture,
+    step::StepFuture, step::toggle_pin
 };
 
 use core::convert::Infallible;
+use embedded_hal_async::delay::DelayUs;
 
 use embedded_hal::digital::ErrorType;
-use fugit_timer::Timer as TimerTrait;
 pub use set_step_mode::SetStepModeFuture;
 
 use crate::stepper::legacy_future::LegacyFuture;
@@ -30,6 +29,7 @@ use crate::{
     util::ref_mut::RefMut,
     Direction,
 };
+use crate::traits_async::{DelayAsyncEnabled, SetDelayAsync};
 
 /// Unified stepper motor interface
 ///
@@ -136,6 +136,12 @@ impl<Driver> Stepper<Driver> {
         self.driver
     }
 
+    pub fn set_delay<Delay: DelayUs>(&mut self, delay: Delay) -> Stepper<Driver::AsyncEnabled<Delay>> where Driver:SetDelayAsync {
+        Stepper {
+            driver: self.driver.set_delay(delay),
+        }
+    }
+
     /// Enable microstepping mode control
     ///
     /// Consumes this instance of `Stepper` and returns a new instance that
@@ -150,27 +156,27 @@ impl<Driver> Stepper<Driver> {
     /// This method is only available, if the driver supports enabling step mode
     /// control. It might no longer be available, once step mode control has
     /// been enabled.
-    pub fn enable_step_mode_control<Resources, Timer, const TIMER_HZ: u32>(
+    pub fn enable_step_mode_control<Resources, Delay, const TIMER_HZ: u32>(
         self,
         res: Resources,
         initial: <Driver::WithStepModeControl as SetStepMode>::StepMode,
-        timer: &mut Timer,
+        delay: &mut Delay,
     ) -> Result<
         Stepper<Driver::WithStepModeControl>,
         SignalError<
             Infallible, // only applies to `SetDirection`, `Step`
             <Driver::WithStepModeControl as SetStepMode>::Error,
-            Timer::Error,
+            Delay::Error,
         >,
     >
     where
         Driver: EnableStepModeControl<Resources>,
-        Timer: TimerTrait<TIMER_HZ>,
+        Delay: DelayUs,
     {
         let mut self_ = Stepper {
             driver: self.driver.enable_step_mode_control(res),
         };
-        self_.set_step_mode(initial, timer).wait()?;
+        self_.set_step_mode_with_delay(initial, delay).wait()?;
 
         Ok(self_)
     }
@@ -184,19 +190,34 @@ impl<Driver> Stepper<Driver> {
     ///
     /// You might need to call [`Stepper::enable_step_mode_control`] to make
     /// this method available.
-    pub fn set_step_mode<'r, Timer, const TIMER_HZ: u32>(
-        &'r mut self,
-        step_mode: Driver::StepMode,
-        timer: &'r mut Timer,
-    ) -> SetStepModeFuture<RefMut<'r, Driver>, RefMut<'r, Timer>, TIMER_HZ>
+    pub fn set_step_mode<Delay>(
+        &mut self,
+        step_mode: Driver::StepMode
+    ) -> SetStepModeFuture<RefMut<Driver>, RefMut<Delay>>
     where
-        Driver: SetStepMode,
-        Timer: TimerTrait<TIMER_HZ>,
+        Driver: SetStepMode + DelayAsyncEnabled<Delay>,
+        Delay: DelayUs,
     {
         SetStepModeFuture::new(
             step_mode,
             RefMut(&mut self.driver),
-            RefMut(timer),
+            RefMut(self.driver.delay().borrow_mut()),
+        )
+    }
+
+    pub fn set_step_mode_with_delay<Delay>(
+        &mut self,
+        step_mode: Driver::StepMode,
+        delay: &mut Delay,
+    ) -> SetStepModeFuture<RefMut<Driver>, RefMut<Delay>>
+        where
+            Driver: SetStepMode,
+            Delay: DelayUs,
+    {
+        SetStepModeFuture::new(
+            step_mode,
+            RefMut(&mut self.driver),
+            RefMut(delay),
         )
     }
 
@@ -214,27 +235,51 @@ impl<Driver> Stepper<Driver> {
     /// This method is only available, if the driver supports enabling direction
     /// control. It might no longer be available, once direction control has
     /// been enabled.
-    pub fn enable_direction_control<Resources, Timer, const TIMER_HZ: u32>(
+    pub fn enable_direction_control<Resources, Delay>(
         self,
         res: Resources,
-        initial: Direction,
-        timer: &mut Timer,
+        initial: Direction
     ) -> Result<
         Stepper<Driver::WithDirectionControl>,
         SignalError<
             <Driver::WithDirectionControl as SetDirection>::Error,
             <<Driver::WithDirectionControl as SetDirection>::Dir as ErrorType>::Error,
-            Timer::Error,
+            Delay::Error,
         >,
     >
     where
-        Driver: EnableDirectionControl<Resources>,
-        Timer: TimerTrait<TIMER_HZ>,
+        Driver: EnableDirectionControl<Resources> + DelayAsyncEnabled<Delay>,
+        Delay: DelayUs,
+    {
+        let mut ret = Stepper {
+            driver: self.driver.enable_direction_control(res),
+        };
+        ret.set_direction_with_delay(initial, self.driver.delay().borrow_mut()).wait()?;
+
+        Ok(ret)
+    }
+
+    pub fn enable_direction_control_with_delay<Resources, Delay>(
+        self,
+        res: Resources,
+        initial: Direction,
+        delay: &mut Delay,
+    ) -> Result<
+        Stepper<Driver::WithDirectionControl>,
+        SignalError<
+            <Driver::WithDirectionControl as SetDirection>::Error,
+            <<Driver::WithDirectionControl as SetDirection>::Dir as ErrorType>::Error,
+            Delay::Error,
+        >,
+    >
+        where
+            Driver: EnableDirectionControl<Resources>,
+            Delay: DelayUs,
     {
         let mut self_ = Stepper {
             driver: self.driver.enable_direction_control(res),
         };
-        self_.set_direction(initial, timer).wait()?;
+        self_.set_direction_with_delay(initial, delay).wait()?;
 
         Ok(self_)
     }
@@ -243,19 +288,34 @@ impl<Driver> Stepper<Driver> {
     ///
     /// You might need to call [`Stepper::enable_direction_control`] to make
     /// this method available.
-    pub fn set_direction<'r, Timer, const TIMER_HZ: u32>(
-        &'r mut self,
+    pub fn set_direction<Delay>(
+        &mut self,
         direction: Direction,
-        timer: &'r mut Timer,
-    ) -> SetDirectionFuture<RefMut<'r, Driver>, RefMut<'r, Timer>, TIMER_HZ>
+    ) -> SetDirectionFuture<RefMut<Driver>, RefMut<Delay>>
     where
-        Driver: SetDirection,
-        Timer: TimerTrait<TIMER_HZ>,
+        Driver: SetDirection + DelayAsyncEnabled<Delay>,
+        Delay: DelayUs,
     {
         SetDirectionFuture::new(
             direction,
             RefMut(&mut self.driver),
-            RefMut(timer),
+            RefMut(self.driver.delay().borrow_mut()),
+        )
+    }
+
+    pub fn set_direction_with_delay<Delay>(
+        &mut self,
+        direction: Direction,
+        delay: &mut Delay,
+    ) -> SetDirectionFuture<RefMut<Driver>, RefMut<Delay>>
+        where
+            Driver: SetDirection,
+            Delay: DelayUs,
+    {
+        SetDirectionFuture::new(
+            direction,
+            RefMut(&mut self.driver),
+            RefMut(delay),
         )
     }
 
@@ -273,12 +333,12 @@ impl<Driver> Stepper<Driver> {
     /// This method is only available, if the driver/controller supports
     /// enabling step control. It might no longer be available, once step
     /// control has been enabled.
-    pub fn enable_step_control<Resources>(
+    pub fn enable_step_control<Resources, Delay>(
         self,
         res: Resources,
     ) -> Stepper<Driver::WithStepControl>
     where
-        Driver: EnableStepControl<Resources>,
+        Driver: EnableStepControl<Resources, Delay>,
     {
         Stepper {
             driver: self.driver.enable_step_control(res),
@@ -293,26 +353,25 @@ impl<Driver> Stepper<Driver> {
     ///
     /// You might need to call [`Stepper::enable_step_control`] to make this
     /// method available.
-    pub fn step<'r, Resources>(
+    pub async fn step<'r, Delay: DelayUs>(
         &'r mut self,
-        delay: &'r mut <Driver as Step>::Delay,
-    ) -> Driver::OutputStepFuture<'r>
+        delay: &'r mut Delay,
+    ) -> Result<Driver::OutputStepFutureResult, Driver::OutputStepFutureError>
     where
         Driver: Step,
     {
-        self.driver.step(delay)
+        self.driver.step(delay).await
     }
 
     /// Releases holding current on the motor coils
-    pub fn release_coils<'r, Delay, const STEP_BUS_WIDTH: usize>(
-        &'r mut self,
-        delay: &'r mut Delay,
-    ) -> Driver::OutputStepFuture<'r>
+    pub async fn release_coils<Delay: DelayUs>(
+        &mut self,
+        delay: &mut Delay
+    ) -> Result<(), Driver::Error>
     where
-        Driver: ReleaseCoils<STEP_BUS_WIDTH> + Step,
+        Driver: ReleaseCoils,
     {
-        todo!();
-        //self.driver.release_coils()
+        self.driver.release_coils(delay).await
     }
 
     // /// Returns the step pulse length of the wrapped driver/controller
@@ -349,7 +408,6 @@ impl<Driver> Stepper<Driver> {
     /// might no longer be available, once motion control support has been
     /// enabled.
     pub fn enable_motion_control<
-        'r,
         Resources,
         const TIMER_HZ: u32,
         const STEP_BUS_WIDTH: usize,
@@ -381,15 +439,15 @@ impl<Driver> Stepper<Driver> {
     ///
     /// You might need to call [`Stepper::enable_motion_control`] to make this
     /// method available.
-    pub fn move_to_position<'r>(
-        &'r mut self,
+    pub async fn move_to_position(
+        &mut self,
         max_velocity: Driver::Velocity,
         target_step: i32,
-    ) -> MoveToFuture<RefMut<'r, Driver>>
+    ) -> Result<(), Driver::Error>
     where
         Driver: MotionControl,
     {
-        MoveToFuture::new(RefMut(&mut self.driver), max_velocity, target_step)
+        MoveToFuture::new(RefMut(&mut self.driver), max_velocity, target_step).await
     }
 
     /// Reset the position to the given value

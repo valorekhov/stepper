@@ -1,5 +1,7 @@
+use core::future::Future;
+use core::pin::Pin;
 use crate::legacy_future::LegacyFuture;
-use core::task::Poll;
+use core::task::{Context, Poll};
 
 use crate::traits::MotionControl;
 
@@ -67,6 +69,17 @@ where
     /// completes, or set up an interrupt that fires once the timer finishes
     /// counting down, and call this method again once it does.
     fn poll(&mut self) -> Poll<Self::FutureOutput> {
+        todo!()
+    }
+}
+
+impl<Driver> Future for MoveToFuture<Driver>
+    where
+        Driver: MotionControl,
+{
+    type Output = Result<(), Driver::Error>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.state {
             State::Initial {
                 max_velocity,
@@ -74,10 +87,12 @@ where
             } => {
                 self.driver.move_to_position(max_velocity, target_step)?;
                 self.state = State::Moving;
+                cx.waker().wake_by_ref();
                 Poll::Pending
             }
             State::Moving => {
                 let still_moving = self.driver.update()?;
+                cx.waker().wake_by_ref();
                 if still_moving {
                     Poll::Pending
                 } else {

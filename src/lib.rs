@@ -160,8 +160,8 @@
 
 #![cfg_attr(not(test), no_std)]
 #![deny(missing_docs, rustdoc::broken_intra_doc_links)]
-#![cfg_attr(feature = "async", feature(type_alias_impl_trait))]
-#![cfg_attr(feature = "async", feature(mixed_integer_ops))]
+#![feature(async_fn_in_trait)]
+// #![cfg_attr(feature = "async", feature(type_alias_impl_trait))]
 
 pub extern crate embedded_hal;
 pub extern crate fugit;
@@ -172,7 +172,6 @@ pub mod drivers;
 pub mod motion_control;
 pub mod step_mode;
 pub mod traits;
-#[cfg(feature = "async")]
 pub mod traits_async;
 pub mod util;
 

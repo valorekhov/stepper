@@ -9,21 +9,20 @@ use fugit::{TimerDurationU32, TimerInstantU32};
 
 /// Wraps a `embedded_hal_async::delay::DelayUs` to provide `fugit_timer::Timer`functionality
 #[pin_project::pin_project]
-pub struct TimerFromAsyncDelay<'a, Delay: DelayUs + 'a, const TIMER_HZ: u32> {
-    delay: Delay,
-    fut: Option<<Delay as DelayUs>::DelayUsFuture<'a>>,
+pub struct TimerFromAsyncDelay<Delay: DelayUs, const TIMER_HZ: u32> {
+    delay: Delay
 }
 
-impl<'a, Delay: DelayUs + 'a, const TIMER_HZ: u32>
-    TimerFromAsyncDelay<'a, Delay, TIMER_HZ>
+impl<Delay: DelayUs, const TIMER_HZ: u32>
+    TimerFromAsyncDelay<Delay, TIMER_HZ>
 {
     pub fn new(delay: Delay) -> Self {
-        Self { delay, fut: None }
+        Self { delay }
     }
 }
 
-impl<'a, Delay: DelayUs + Unpin, const TIMER_HZ: u32>
-    fugit_timer::Timer<TIMER_HZ> for TimerFromAsyncDelay<'a, Delay, TIMER_HZ>
+impl<Delay: DelayUs + Unpin, const TIMER_HZ: u32>
+    fugit_timer::Timer<TIMER_HZ> for TimerFromAsyncDelay<Delay, TIMER_HZ>
 {
     type Error = ();
 
@@ -97,21 +96,18 @@ where
     Timer: fugit_timer::Timer<TIMER_HZ>,
 {
     type Error = ();
-    type DelayUsFuture<'a> = AsyncDelay<RefMut<'a, Timer>, TIMER_HZ> where Self: 'a;
 
-    fn delay_us(&mut self, us: u32) -> Self::DelayUsFuture<'_> {
+    async fn delay_us(&mut self, us: u32) -> Result<(), Self::Error> {
         AsyncDelay::start(
             &mut self._timer,
             TimerDurationU32::<TIMER_HZ>::micros(us),
-        )
+        ).await
     }
 
-    type DelayMsFuture<'a> = AsyncDelay<RefMut<'a, Timer>, TIMER_HZ> where Self: 'a;
-
-    fn delay_ms(&mut self, ms: u32) -> Self::DelayMsFuture<'_> {
+    async fn delay_ms(&mut self, ms: u32) -> Result<(), Self::Error> {
         AsyncDelay::start(
             &mut self._timer,
             TimerDurationU32::<TIMER_HZ>::millis(ms),
-        )
+        ).await
     }
 }

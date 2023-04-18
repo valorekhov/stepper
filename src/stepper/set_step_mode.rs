@@ -1,16 +1,21 @@
 use crate::stepper::legacy_future::LegacyFuture;
 use core::{convert::Infallible, task::Poll};
-use fugit::TimerDurationU32 as TimerDuration;
-use fugit_timer::Timer as TimerTrait;
+use core::future::Future;
+use core::pin::Pin;
+use core::task::Context;
+use core::task::Poll::Ready;
+use Poll::Pending;
+use embedded_hal_async::delay::DelayUs;
+use futures::pin_mut;
 
 use crate::traits::SetStepMode;
 
 use super::SignalError;
 
-enum State {
+enum State<Fut> {
     Initial,
-    ApplyingConfig,
-    EnablingDriver,
+    ApplyingConfig(Fut),
+    EnablingDriver(Fut),
     Finished,
 }
 
@@ -22,18 +27,18 @@ enum State {
 ///
 /// [`Stepper::set_step_mode`]: crate::Stepper::set_step_mode
 #[must_use]
-pub struct SetStepModeFuture<Driver: SetStepMode, Timer, const TIMER_HZ: u32> {
+pub struct SetStepModeFuture<'r, Driver: SetStepMode, Delay: DelayUs + 'r> {
     step_mode: Driver::StepMode,
     driver: Driver,
-    timer: Timer,
-    state: State,
+    delay: Delay,
+    state: State<Pin<&'r mut dyn Future<Output = Result<(), Delay::Error>>>>,
 }
 
-impl<Driver, Timer, const TIMER_HZ: u32>
-    SetStepModeFuture<Driver, Timer, TIMER_HZ>
+impl<'r, Driver, Delay>
+    SetStepModeFuture<'r, Driver, Delay>
 where
     Driver: SetStepMode,
-    Timer: TimerTrait<TIMER_HZ>,
+    Delay: DelayUs,
 {
     /// Create new instance of `SetStepModeFuture`
     ///
@@ -45,30 +50,30 @@ where
     pub fn new(
         step_mode: Driver::StepMode,
         driver: Driver,
-        timer: Timer,
+        delay: Delay,
     ) -> Self {
         Self {
             step_mode,
             driver,
-            timer,
+            delay,
             state: State::Initial,
         }
     }
 
     /// Drop the future and release the resources that were moved into it
-    pub fn release(self) -> (Driver, Timer) {
-        (self.driver, self.timer)
+    pub fn release(self) -> (Driver, Delay) {
+        (self.driver, self.delay)
     }
 }
 
-impl<Driver, Timer, const TIMER_HZ: u32> LegacyFuture
-    for SetStepModeFuture<Driver, Timer, TIMER_HZ>
+impl<'r, Driver, Delay> LegacyFuture
+    for SetStepModeFuture<'r, Driver, Delay>
 where
     Driver: SetStepMode,
-    Timer: TimerTrait<TIMER_HZ>,
+    Delay: DelayUs,
 {
     type DriverError = Driver::Error;
-    type TimerError = Timer::Error;
+    type TimerError = Delay::Error;
 
     type FutureOutput = Result<
         (),
@@ -91,78 +96,75 @@ where
     /// completes, or set up an interrupt that fires once the timer finishes
     /// counting down, and call this method again once it does.
     fn poll(&mut self) -> Poll<Self::FutureOutput> {
-        match self.state {
+        todo!("implement `SetStepModeFuture::poll`")
+    }
+}
+
+impl<'r, Driver, Delay> Future
+    for SetStepModeFuture<'r, Driver, Delay>
+where
+    Driver: SetStepMode,
+    Delay: DelayUs,
+{
+    type Output = Result<
+        (),
+        SignalError<
+            Infallible, // only applies to `SetDirection`, `Step`
+            Driver::Error,
+            Delay::Error,
+        >,
+    >;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match &self.state {
             State::Initial => {
                 self.driver
                     .apply_mode_config(self.step_mode)
                     .map_err(|err| SignalError::Pin(err))?;
 
-                let ticks: TimerDuration<TIMER_HZ> =
-                    Driver::SETUP_TIME.convert();
+                let fut = self.delay
+                    .delay_us(Driver::SETUP_TIME.to_micros());
+                pin_mut!(fut);
 
-                self.timer
-                    .start(ticks)
-                    .map_err(|err| SignalError::Timer(err))?;
-
-                self.state = State::ApplyingConfig;
-                Poll::Pending
+                self.state = State::ApplyingConfig(fut);
+                Pending
             }
-            State::ApplyingConfig => match self.timer.wait() {
-                Ok(()) => {
+            State::ApplyingConfig(pinned_fut) => match pinned_fut.poll(cx) {
+                Ready(Ok(())) => {
                     self.driver
                         .enable_driver()
                         .map_err(|err| SignalError::Pin(err))?;
 
-                    let ticks: TimerDuration<TIMER_HZ> =
-                        Driver::HOLD_TIME.convert();
+                    drop(pinned_fut);
 
-                    self.timer
-                        .start(ticks)
-                        .map_err(|err| SignalError::Timer(err))?;
+                    let fut = self.delay
+                        .delay_us(Driver::HOLD_TIME.to_micros());
+                    pin_mut!(fut);
 
-                    self.state = State::EnablingDriver;
-                    Poll::Ready(Ok(()))
+                    self.state = State::EnablingDriver(fut);
+                    Ready(Ok(()))
                 }
-                Err(nb::Error::Other(err)) => {
+                Ready(Err(err)) => {
                     self.state = State::Finished;
-                    Poll::Ready(Err(SignalError::Timer(err)))
+                    Ready(Err(SignalError::Timer(err)))
                 }
-                Err(nb::Error::WouldBlock) => Poll::Pending,
+                Pending => Pending,
+                _ => unreachable!(),
             },
-            State::EnablingDriver => match self.timer.wait() {
-                Ok(()) => {
+            State::EnablingDriver(pinned_fut) => match pinned_fut.poll(cx) {
+                Ready(Ok(())) => {
+                    drop(pinned_fut);
                     self.state = State::Finished;
-                    Poll::Ready(Ok(()))
+                    Ready(Ok(()))
                 }
-                Err(nb::Error::Other(err)) => {
+                Ready(Err(err)) => {
                     self.state = State::Finished;
-                    Poll::Ready(Err(SignalError::Timer(err)))
+                    Ready(Err(SignalError::Timer(err)))
                 }
-                Err(nb::Error::WouldBlock) => Poll::Pending,
+                Pending => Pending,
+                _ => unreachable!(),
             },
-            // block!(timer.try_wait()).map_err(|err| Error::Timer(err))?;
-            State::Finished => Poll::Ready(Ok(())),
+            State::Finished => Ready(Ok(())),
         }
     }
 }
-
-// impl<Driver, Timer, const TIMER_HZ: u32> Future
-//     for SetStepModeFuture<Driver, Timer, TIMER_HZ>
-// where
-//     Driver: SetStepMode,
-//     Timer: TimerTrait<TIMER_HZ>,
-// {
-//     type Output = Result<
-//         (),
-//         SignalError<
-//             Infallible, // only applies to `SetDirection`, `Step`
-//             Driver::Error,
-//             Timer::Error,
-//         >,
-//     >;
-//
-//     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-//         let this = self.project().as_mut();
-//         this.poll()
-//     }
-// }

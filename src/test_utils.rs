@@ -1,6 +1,5 @@
 use core::convert::Infallible;
-use core::future::Ready;
-use embedded_hal::digital::blocking::OutputPin;
+use embedded_hal::digital::OutputPin;
 use embedded_hal::digital::ErrorType;
 use embedded_hal_async::delay::DelayUs;
 use fugit::{TimerDurationU32, TimerInstantU32};
@@ -111,17 +110,12 @@ pub struct NoDelay;
 
 impl DelayUs for NoDelay {
     type Error = ();
-    type DelayUsFuture<'a>
-    = Ready<Result<(), Self::Error>>  where Self: 'a,;
 
-    fn delay_us(&mut self, us: u32) -> Self::DelayUsFuture<'_> {
-        core::future::ready(Ok(()))
+    async fn delay_us(&mut self, us: u32) -> Result<(), Self::Error> {
+        core::future::ready(Ok(())).await
     }
 
-    type DelayMsFuture<'a>
-    = Ready<Result<(), Self::Error>> where Self: 'a;
-
-    fn delay_ms(&mut self, ms: u32) -> Self::DelayMsFuture<'_> {
-        core::future::ready(Ok(()))
+    async fn delay_ms(&mut self, ms: u32) -> Result<(), Self::Error> {
+        core::future::ready(Ok(())).await
     }
 }

@@ -3,15 +3,36 @@ use crate::traits::{OutputStepFutureItem, Step as StepAsync};
 use crate::SignalError;
 use core::convert::Infallible;
 use core::fmt::Debug;
-use core::future::Future;
-use embedded_hal::digital::blocking::OutputPin;
+use embedded_hal::digital::OutputPin;
 use embedded_hal_async::delay::DelayUs;
+use crate::traits_async::{DelayAsyncEnabled, SetDelayAsync};
 
 /// Experimental Async implementations for the Generic driver
 ///
 /// Users are not expected to use this API directly, except to create an
 /// instance using [`Generic::new`]. Please check out
 /// [`Stepper`](crate::Stepper) instead.
+
+impl<Pins, const NUM_STEPS: usize, Delay: DelayUs> DelayAsyncEnabled<Delay> for Generic<Pins, NUM_STEPS, Delay> {
+    fn delay(self) -> Delay {
+        self.delay
+    }
+}
+
+impl<Pins, const NUM_STEPS: usize> SetDelayAsync for Generic<Pins, NUM_STEPS, ()>{
+    type AsyncEnabled<Delay: DelayUs> = Generic<Pins, NUM_STEPS, Delay>;
+
+    fn set_delay<Delay: DelayUs>(self, delay: Delay) -> Self::AsyncEnabled<Delay> {
+        Generic {
+            pins: self.pins,
+            steps: self.steps,
+            step: self.step,
+            direction: self.direction,
+            delay,
+        }
+    }
+}
+
 
 impl<Pins, OutputPinError, const NUM_STEPS: usize, Delay> OutputStepFutureItem
     for Generic<Pins, NUM_STEPS, Delay>
@@ -35,40 +56,15 @@ where
     OutputPinError: Debug,
     Delay: DelayUs,
 {
-    type Delay = Delay;
     type OutputStepFutureResult = ();
     type OutputStepFutureError =
         SignalError<Infallible, OutputPinError, Delay::Error>;
 
-    type OutputStepFuture<'r>
-    = impl Future<Output = Result<Self::OutputStepFutureResult, Self::OutputStepFutureError>> where Self: 'r;
+    async fn step<Delay2: DelayUs>(
+        self: &mut Self,
+        delay: &mut Delay2,
+    ) -> Result<Self::OutputStepFutureResult, Self::OutputStepFutureError> {
 
-    fn step<'r>(
-        self: &'r mut Self,
-        delay: &'r mut Delay,
-    ) -> Self::OutputStepFuture<'r> {
-        // unable to express the same as an inline async{} block due to https://github.com/rust-lang/rust/issues/65442
-        // moving into a call of a an async function instead
-        self.step_async_int(delay)
-    }
-}
-
-impl<
-        LinePin,
-        OutputPinError,
-        Delay,
-        const STEP_BUS_WIDTH: usize,
-        const NUM_STEPS: usize,
-    > Generic<[LinePin; STEP_BUS_WIDTH], NUM_STEPS, Delay>
-where
-    LinePin: OutputPin<Error = OutputPinError>,
-    OutputPinError: Debug,
-    Delay: DelayUs,
-{
-    async fn step_async_int<'d>(
-        &mut self,
-        delay: &'d mut Delay,
-    ) -> Result<(), SignalError<Infallible, OutputPinError, Delay::Error>> {
         let mut current_step = self.step.unwrap_or_else(|| 0) as usize;
 
         let firing_sequence =
@@ -83,7 +79,7 @@ where
                 } else {
                     pin.set_low()
                 })
-                .expect("it to work");
+                    .expect("it to work");
             };
         }
 
@@ -97,57 +93,6 @@ where
         Ok(())
     }
 }
-
-// impl<LinePin, Src  OutputPinError, const STEP_BUS_WIDTH: usize, const NUM_STEPS: usize>
-// EnableStepControlAsync<(), Delay>
-// for Generic<LinePin, Src STEP_BUS_WIDTH, NUM_STEPS>
-//     where
-//         LinePin: OutputPin<Error = OutputPinError>,
-//         Delay: DelayUs,
-//         OutputPinError: Debug
-// {
-//     type WithAsyncStepControl = Generic<LinePin, STEP_BUS_WIDTH, NUM_STEPS>;
-//
-//     fn enable_step_control_async(self, _: (), delay: Delay) -> Self::WithAsyncStepControl {
-//         Generic {
-//             pins: self.pins,
-//             steps: self.steps,
-//             step: self.step,
-//             direction: self.direction,
-//             delay
-//         }
-//     }
-// }
-//
-
-// impl<
-//         LinePin,
-//         T
-//         OutputPinError,
-//         const STEP_BUS_WIDTH: usize,
-//         const NUM_STEPS: usize,
-//     > SetDelayAsync for Generic<LinePin, T STEP_BUS_WIDTH, NUM_STEPS>
-// where
-//     Self: DelayAsyncEnabled<TDelay>,
-//     LinePin: OutputPin<Error = OutputPinError>,
-//     OutputPinError: Debug,
-//     TDelay: DelayUs,
-// {
-//     type AsyncEnabled<Delay: DelayUs> = Self;
-//
-//     fn set_delay<Delay: DelayUs>(
-//         self,
-//         delay: T
-//     ) -> Self::AsyncEnabled<Delay> {
-//         Self {
-//             pins: self.pins,
-//             steps: self.steps,
-//             step: self.step,
-//             direction: self.direction,
-//
-//         }
-//     }
-// }
 
 #[cfg(test)]
 mod test {
@@ -173,10 +118,10 @@ mod test {
         let pins = [&mut pin1, &mut pin2];
         let dir_control_stepper =
             Stepper::from_driver(Generic::new([0b01_u8, 0b10_u8]))
+                .set_delay(delay)
                 .enable_direction_control(
                     (),
-                    Direction::Forward,
-                    &mut dir_control_timer,
+                    Direction::Forward
                 )
                 .expect("direction setting failed");
         let mut stepper = dir_control_stepper.enable_step_control(pins);

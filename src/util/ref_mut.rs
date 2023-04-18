@@ -2,6 +2,7 @@
 //!
 //! See [`RefMut`] for more information.
 
+use embedded_hal_async::delay::DelayUs;
 use crate::Direction;
 use fugit::{
     NanosDurationU32 as Nanoseconds, TimerDurationU32 as TimerDuration,
@@ -50,6 +51,18 @@ where
     }
 }
 
+impl<'r, T:DelayUs> DelayUs for RefMut<'r, T>{
+    type Error = T::Error;
+
+    async fn delay_us(&mut self, us: u32) -> Result<(), T::Error>  {
+        self.0.delay_us(us).await
+    }
+
+    async fn delay_ms(&mut self, ms: u32) -> Result<(), T::Error> {
+        self.0.delay_ms(ms).await
+    }
+}
+
 impl<'r, T> MotionControl for RefMut<'r, T>
 where
     T: MotionControl,
@@ -57,21 +70,21 @@ where
     type Velocity = T::Velocity;
     type Error = T::Error;
 
-    fn move_to_position(
+    async fn move_to_position(
         &mut self,
         max_velocity: Self::Velocity,
         target_step: i32,
-    ) -> Result<(), Self::Error> {
-        self.0.move_to_position(max_velocity, target_step)
+    ) -> Result<(), T::Error> {
+        self.0.move_to_position(max_velocity, target_step).await
     }
 
     fn reset_position(&mut self, step: i32) -> Result<(), Self::Error> {
         self.0.reset_position(step)
     }
 
-    fn update(&mut self) -> Result<bool, Self::Error> {
-        self.0.update()
-    }
+    // fn update(&mut self) -> Result<bool, Self::Error> {
+    //     self.0.update()
+    // }
 }
 
 impl<'r, T> SetDirection for RefMut<'r, T>

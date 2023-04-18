@@ -1,4 +1,6 @@
 use core::convert::Infallible;
+use core::future::Future;
+use core::pin::Pin;
 use core::task::Poll;
 use embedded_hal::digital::ErrorType;
 use embedded_hal_async::delay::DelayUs;
@@ -8,15 +10,15 @@ use fugit::{
 use ramp_maker::MotionProfile;
 
 use crate::traits::Step;
-use crate::{traits::SetDirection, Direction, SetDirectionFuture, StepFuture};
+use crate::{traits::SetDirection, Direction, SetDirectionFuture};
+use futures::pin_mut;
 
 use super::{
     error::{Error, TimeConversionError},
     DelayToTicks,
 };
 
-pub enum State<
-    'r,
+pub enum State<'r,
     Driver,
     Delay: DelayUs,
     Profile: MotionProfile,
@@ -24,13 +26,13 @@ pub enum State<
     const STEP_BUS_WIDTH: usize,
 > {
     Idle {
-        driver: Driver,
+        driver: &'r mut Driver,
         timer: Delay,
     },
-    SetDirection(SetDirectionFuture<Driver, Delay, TIMER_HZ>),
+    SetDirection(Pin<&'r mut dyn Future<Output= Result<(), Delay::Error>>>),
     Step {
-        future: StepFuture<'r, Delay, Driver, STEP_BUS_WIDTH>,
-        delay: Profile::Delay,
+        future: Pin<&'r mut dyn Future<Output= Result<(), Delay::Error>>>,
+        profile_delay: Profile::Delay,
     },
     StepDelay {
         driver: Driver,
@@ -48,7 +50,7 @@ pub fn update<
     const TIMER_HZ: u32,
     const STEP_BUS_WIDTH: usize,
 >(
-    mut state: State<'r, Driver, Delay, Profile, TIMER_HZ, STEP_BUS_WIDTH>,
+    mut state: State<Driver, Delay, Profile, TIMER_HZ, STEP_BUS_WIDTH>,
     new_motion: &mut Option<Direction>,
     profile: &mut Profile,
     current_step: &mut i32,
@@ -60,7 +62,7 @@ pub fn update<
         Error<
             <Driver as SetDirection>::Error,
             <<Driver as SetDirection>::Dir as ErrorType>::Error,
-            <Driver as Step>::OutputStepFutureError,
+            Infallible, //<Driver as Step>::OutputStepFutureError,
             Infallible,
             Delay::Error,
             Convert::Error,
@@ -76,7 +78,7 @@ where
 {
     loop {
         match state {
-            State::Idle { driver, timer } => {
+            State::Idle { driver, timer: delay } => {
                 // Being idle can mean that there's actually nothing to do, or
                 // it might just be a short breather before more work comes in.
 
@@ -86,28 +88,32 @@ where
                     //
                     // Let's update the state, but don't return just yet. We
                     // have more stuff to do (polling the future).
-                    state = State::SetDirection(SetDirectionFuture::new(
-                        direction, driver, timer,
-                    ));
+                    let fut = SetDirectionFuture::new(
+                        direction, driver, delay,
+                    );
+                    pin_mut!(fut);
+                    state = State::SetDirection(fut);
                     *current_direction = direction;
                     continue;
                 }
 
                 // No new motion has been started, but we might still have an
                 // ongoing one. Let's ask the motion profile.
-                if let Some(delay) = profile.next_delay() {
+                if let Some(profile_delay) = profile.next_delay() {
                     // There's a motion ongoing. Let's start the next step, but
                     // again, don't return yet. The future needs to be polled.
+                    let step_fut = driver.step(delay);
+                    pin_mut!(step_fut);
                     state = State::Step {
-                        future: StepFuture::new(driver, timer),
-                        delay,
+                        future: step_fut,
+                        profile_delay,
                     };
                     continue;
                 }
 
                 // Now we know that there's truly nothing to do. Return to the
                 // caller and stay idle.
-                return (Ok(false), State::Idle { driver, timer });
+                return (Ok(false), State::Idle { driver, timer: delay });
             }
             State::SetDirection(mut future) => {
                 match future.poll() {
@@ -116,7 +122,7 @@ where
                         // can figure out what to do next in the next loop
                         // iteration.
                         let (driver, timer) = future.release();
-                        state = State::Idle { driver, timer };
+                        state = State::Idle { driver, timer: timer };
                         continue;
                     }
                     Poll::Ready(Err(err)) => {
@@ -136,7 +142,7 @@ where
                     }
                 }
             }
-            State::Step { mut future, delay } => {
+            State::Step { mut future, profile_delay } => {
                 match future.poll() {
                     Poll::Ready(Ok(())) => {
                         // A step was made. Now we need to wait out the rest of
@@ -147,7 +153,7 @@ where
                         let (driver, mut timer) = future.release();
                         let delay_left: TimerDuration<TIMER_HZ> =
                             match delay_left(
-                                delay,
+                                profile_delay,
                                 Driver::PULSE_LENGTH,
                                 convert,
                             ) {
@@ -155,7 +161,7 @@ where
                                 Err(err) => {
                                     return (
                                         Err(Error::TimeConversion(err)),
-                                        State::Idle { driver, timer },
+                                        State::Idle { driver, timer: timer },
                                     )
                                 }
                             };
@@ -163,7 +169,7 @@ where
                         if let Err(err) = timer.start(delay_left) {
                             return (
                                 Err(Error::StepDelay(err)),
-                                State::Idle { driver, timer },
+                                State::Idle { driver, timer: timer },
                             );
                         }
 
@@ -178,12 +184,12 @@ where
                         // the error can be recovered from.
                         return (
                             Err(Error::Step(err)),
-                            State::Step { future, delay },
+                            State::Step { future, profile_delay },
                         );
                     }
                     Poll::Pending => {
                         // Still stepping. Let caller know.
-                        return (Ok(true), State::Step { future, delay });
+                        return (Ok(true), State::Step { future, profile_delay });
                     }
                 }
             }
@@ -192,7 +198,7 @@ where
                     Ok(()) => {
                         // We've waited out the step delay. Return to idle
                         // state, to figure out what's next.
-                        state = State::Idle { driver, timer };
+                        state = State::Idle { driver, timer: timer };
                         continue;
                     }
                     Err(nb::Error::WouldBlock) => {

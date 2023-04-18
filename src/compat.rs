@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use embedded_hal::digital::blocking::OutputPin;
+use embedded_hal::digital::OutputPin;
 use embedded_hal::digital::ErrorType;
 use embedded_hal_stable::digital::v2::OutputPin as StableOutputPin;
 

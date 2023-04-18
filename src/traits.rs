@@ -21,11 +21,10 @@
 //! [`Stepper`]: crate::Stepper
 
 use crate::Direction;
-use core::future::Future;
-use embedded_hal::digital::blocking::OutputPin;
+use embedded_hal::digital::OutputPin;
 use embedded_hal::digital::PinState;
+use embedded_hal_async::delay::DelayUs;
 use fugit::NanosDurationU32 as Nanoseconds;
-use fugit_timer::Delay;
 
 use crate::step_mode::StepMode;
 
@@ -127,7 +126,7 @@ pub enum OutputPinAction<Pin> {
 ///
 /// The `Resources` type parameter defines the hardware resources required for
 /// step control.
-pub trait EnableStepControl<Resources> {
+pub trait EnableStepControl<Resources, Delay> {
     /// The type of the driver after step control has been enabled
     type WithStepControl: Step;
 
@@ -138,53 +137,37 @@ pub trait EnableStepControl<Resources> {
 /// Implemented by drivers which handle firing of pins independently
 
 pub trait Step {
-    // const BUS_WIDTH: usize = 1;
-
-    /// "Convenience" type for implementing code which needs to refer to the same
-    /// type in step(Delay) and also in any concrete types configured on OutputStepFuture
-
-    type Delay;
-
     /// The type of result being returned
     type OutputStepFutureResult;
 
     /// The error that can occur while performing a step
     type OutputStepFutureError;
 
-    /// The output future type
-    type OutputStepFuture<'r>: Future<
-        Output = Result<
-            Self::OutputStepFutureResult,
-            Self::OutputStepFutureError,
-        >,
-    >
-    where
-        Self: 'r,
-        Self::Delay: 'r;
-
     /// Performs a single step per driver's specific logic
-    fn step<'r>(
-        &'r mut self,
-        delay: &'r mut Self::Delay,
-    ) -> Self::OutputStepFuture<'r>;
+    async fn step<Delay: DelayUs>(
+        &mut self,
+        delay: &mut Delay,
+    ) -> Result<
+        Self::OutputStepFutureResult,
+        Self::OutputStepFutureError,
+    >;
 }
 
-/// Implemented by drivers that support controlling the STEP signal
-pub trait ReleaseCoils<const STEP_BUS_WIDTH: usize> {
-    /// The minimum length of a STEP pulse
-    const PULSE_LENGTH: Nanoseconds;
-
-    /// The type of the STEP pin
-    type StepPin: OutputPin;
+/// Implemented by drivers that support stopping holding current in motor coils.
+/// From there the behaviour is undefined and is specific to the application.
+/// The motor may or may not have enough holding torque in place to maintain the current position.
+/// This is primarily an energy saving measure.
+pub trait ReleaseCoils {
 
     /// The error that can occur while accessing the STEP pin(s)
     type Error;
 
     /// Provides access to the STEP pins and associated Low/High state for the leading edge
-    fn release_coils(
+    async fn release_coils<Delay: DelayUs>(
         &mut self,
+        delay: &mut Delay
     ) -> Result<
-        [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
+        (),
         Self::Error,
     >;
 }
@@ -195,6 +178,7 @@ pub trait ReleaseCoils<const STEP_BUS_WIDTH: usize> {
 /// motion control.
 pub trait EnableMotionControl<
     Resources,
+    // TODO: Remove genetic consts
     const TIMER_HZ: u32,
     const BUS_WIDTH: usize,
 >
@@ -222,9 +206,9 @@ pub trait MotionControl {
     /// Move to the given position
     ///
     /// This method must arrange for the motion to start, but must not block
-    /// until it is completed. If more attention is required during the motion,
-    /// this should be handled in [`MotionControl::update`].
-    fn move_to_position(
+    /// until it is completed. Each function poll provides an update as to whether
+    /// the motion is complete.
+    async fn move_to_position(
         &mut self,
         max_velocity: Self::Velocity,
         target_step: i32,
@@ -236,13 +220,13 @@ pub trait MotionControl {
     /// driver's internal position value, for example for homing.
     fn reset_position(&mut self, step: i32) -> Result<(), Self::Error>;
 
-    /// Update an ongoing motion
-    ///
-    /// This method may contain any code required to maintain an ongoing motion,
-    /// if required, or it might just check whether a motion is still ongoing.
-    ///
-    /// Return `true`, if motion is ongoing, `false` otherwise. If `false` is
-    /// returned, the caller may assume that this method doesn't need to be
-    /// called again, until starting another motion.
-    fn update(&mut self) -> Result<bool, Self::Error>;
+    // /// Update an ongoing motion
+    // ///
+    // /// This method may contain any code required to maintain an ongoing motion,
+    // /// if required, or it might just check whether a motion is still ongoing.
+    // ///
+    // /// Return `true`, if motion is ongoing, `false` otherwise. If `false` is
+    // /// returned, the caller may assume that this method doesn't need to be
+    // /// called again, until starting another motion.
+    // fn update(&mut self) -> Result<bool, Self::Error>;
 }

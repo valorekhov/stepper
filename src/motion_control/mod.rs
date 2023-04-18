@@ -21,7 +21,6 @@ use replace_with::replace_with_and_return;
 
 use crate::stepper::set_step_mode::SetStepModeFuture;
 use crate::traits::OutputPinAction;
-use crate::util::delay::AsyncDelay;
 use crate::{
     traits::{
         EnableMotionControl, MotionControl, SetDirection, SetStepMode, Step,
@@ -80,7 +79,7 @@ impl<
     >
 where
     Profile: MotionProfile,
-    Delay: embedded_hal_async::delay::DelayUs,
+    Delay: DelayUs,
 {
     /// Construct a new instance of `SoftwareMotionControl`
     ///
@@ -93,12 +92,12 @@ where
     /// [`Stepper::enable_motion_control`]: crate::Stepper::enable_motion_control
     pub fn new(
         driver: Driver,
-        timer: Delay,
+        delay: Delay,
         profile: Profile,
         convert: Convert,
     ) -> Self {
         Self {
-            state: State::Idle { driver, timer },
+            state: State::Idle { driver, delay },
             new_motion: None,
             profile,
             current_step: 0,
@@ -136,7 +135,7 @@ where
     ///
     /// This is only possible if there is no ongoing movement.
     pub fn timer(&self) -> Option<&Delay> {
-        if let State::Idle { timer, .. } = &self.state {
+        if let State::Idle { delay: timer, .. } = &self.state {
             return Some(timer);
         }
 
@@ -147,7 +146,7 @@ where
     ///
     /// This is only possible if there is no ongoing movement.
     pub fn timer_mut(&mut self) -> Option<&mut Delay> {
-        if let State::Idle { timer, .. } = &mut self.state {
+        if let State::Idle { delay: timer, .. } = &mut self.state {
             return Some(timer);
         }
 
@@ -193,7 +192,7 @@ where
         &mut self,
         step_mode: Driver::StepMode,
     ) -> Result<
-        SetStepModeFuture<RefMut<Driver>, RefMut<Delay>, TIMER_HZ>,
+        SetStepModeFuture<RefMut<Driver>, RefMut<Delay>>,
         BusyError<Infallible>,
     >
     where
@@ -201,8 +200,8 @@ where
         Delay: DelayUs,
     {
         let future = match &mut self.state {
-            State::Idle { driver, timer } => {
-                SetStepModeFuture::new(step_mode, RefMut(driver), RefMut(timer))
+            State::Idle { driver, delay } => {
+                SetStepModeFuture::new(step_mode, RefMut(driver), RefMut(delay))
             }
             _ => return Err(BusyError::Busy),
         };
@@ -229,7 +228,7 @@ where
         &mut self,
         direction: Direction,
     ) -> Result<
-        SetDirectionFuture<RefMut<Driver>, RefMut<Delay>, TIMER_HZ>,
+        SetDirectionFuture<RefMut<Driver>, RefMut<Delay>>,
         BusyError<Infallible>,
     >
     where
@@ -237,7 +236,7 @@ where
         Delay: DelayUs,
     {
         let future = match &mut self.state {
-            State::Idle { driver, timer } => SetDirectionFuture::new(
+            State::Idle { driver, delay: timer } => SetDirectionFuture::new(
                 direction,
                 RefMut(driver),
                 RefMut(timer),
@@ -264,8 +263,8 @@ where
     ///
     /// [`Stepper::step`]: crate::Stepper::step
     pub fn step(
-        &'r mut self,
-    ) -> Result<Driver::OutputStepFuture<'r>, BusyError<Infallible>>
+        &mut self,
+    ) -> Result<Driver::OutputStepFutureResult, BusyError<Infallible>>
     where
         Driver: Step,
         Delay: DelayUs,
@@ -273,7 +272,7 @@ where
         let future = match &mut self.state {
             State::Idle {
                 driver,
-                timer: delay,
+                delay,
             } => driver.step(delay),
             _ => return Err(BusyError::Busy),
         };
@@ -317,11 +316,18 @@ where
         Convert::Error,
     >;
 
-    fn move_to_position(
+    async fn move_to_position(
         &mut self,
         max_velocity: Self::Velocity,
         target_step: i32,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), Error<
+        <Driver as SetDirection>::Error,
+        <<Driver as SetDirection>::Dir as ErrorType>::Error,
+        <Driver as Step>::OutputStepFutureError,
+        Infallible,
+        Delay::Error,
+        Convert::Error,
+    >> {
         let steps_from_here = target_step - self.current_step;
 
         self.profile
@@ -342,29 +348,29 @@ where
         Ok(())
     }
 
-    fn update(&mut self) -> Result<bool, Self::Error> {
-        // Otherwise the closure will borrow all of `self`.
-        let new_motion = &mut self.new_motion;
-        let profile = &mut self.profile;
-        let current_step = &mut self.current_step;
-        let current_direction = &mut self.current_direction;
-        let convert = &self.convert;
-
-        replace_with_and_return(
-            &mut self.state,
-            || State::Invalid,
-            |state| {
-                state::update(
-                    state,
-                    new_motion,
-                    profile,
-                    current_step,
-                    current_direction,
-                    convert,
-                )
-            },
-        )
-    }
+    // async fn update(&mut self) -> Result<bool, Self::Error> {
+    //     // Otherwise the closure will borrow all of `self`.
+    //     let new_motion = &mut self.new_motion;
+    //     let profile = &mut self.profile;
+    //     let current_step = &mut self.current_step;
+    //     let current_direction = &mut self.current_direction;
+    //     let convert = &self.convert;
+    //
+    //     replace_with_and_return(
+    //         &mut self.state,
+    //         || State::Invalid,
+    //         |state| {
+    //             state::update(
+    //                 state,
+    //                 new_motion,
+    //                 profile,
+    //                 current_step,
+    //                 current_direction,
+    //                 convert,
+    //             )
+    //         },
+    //     )
+    // }
 }
 
 // We could also implement the various "enable" traits here, but those
@@ -482,25 +488,26 @@ impl<
     >
 where
     Driver: Step,
-    Profile: MotionProfile + 'r,
-    Convert: 'r,
+    Profile: MotionProfile,
+    //Convert: 'r,
 {
-    type Delay = Delay;
     type OutputStepFutureResult = ();
-    type OutputStepFutureError = ();
-    type OutputStepFuture<'r2>
+    type OutputStepFutureError = BusyError<Driver::OutputStepFutureError>;
 
-    = Driver::OutputStepFuture<'r2> where Self: 'r2, Delay: 'r2,;
-
-    fn step<'r2>(
-        &'r2 mut self,
-        delay: &'r2 mut Self::Delay,
-    ) -> Self::OutputStepFuture<'r> {
+    async fn step<Delay2: DelayUs>(
+        &mut self,
+        delay: &mut Delay2,
+    ) -> Result<(), BusyError<Driver::OutputStepFutureError>> {
         match self.driver_mut() {
             Some(driver) => {
-                driver.step() //.map_err(|err| BusyError::Other(err))
+                let result = driver.step(delay).await;
+                match result {
+                    Ok(_) => Ok(()),
+                    Err(err) => Err(BusyError::Other(err)),
+                }
             }
-            None => Err(BusyError::Busy),
+            None =>
+                Err(BusyError::Busy),
         }
     }
 }
@@ -524,8 +531,7 @@ where
     Profile::Velocity: Copy,
     Convert: DelayToTicks<Profile::Delay, TIMER_HZ>,
 {
-    type WithMotionControl = SoftwareMotionControl<
-        'r,
+    type WithMotionControl = SoftwareMotionControl<'r,
         Driver,
         Delay,
         Profile,
@@ -536,8 +542,9 @@ where
 
     fn enable_motion_control(
         self,
-        (timer, profile, convert): (Delay, Profile, Convert),
+        (delay, profile, convert): (Delay, Profile, Convert),
     ) -> Self::WithMotionControl {
-        SoftwareMotionControl::new(self, timer, profile, convert)
+        // The issue is due to 'r lifetime used in the "for" generic type on line 517
+        SoftwareMotionControl::new(self, delay, profile, convert)
     }
 }

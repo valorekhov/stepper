@@ -11,11 +11,10 @@
 
 use core::convert::Infallible;
 use core::fmt::Debug;
-use core::marker::PhantomData;
 use core::mem;
 use core::mem::MaybeUninit;
 
-use embedded_hal::digital::blocking::OutputPin;
+use embedded_hal::digital::OutputPin;
 use embedded_hal::digital::ErrorType;
 use embedded_hal::digital::PinState::Low;
 use embedded_hal_async::delay::DelayUs;
@@ -30,7 +29,7 @@ use crate::{
     Direction,
 };
 
-#[cfg(feature = "async")]
+// #[cfg(feature = "async")]
 /// Async extensions for the Generic driver
 pub mod generic_async;
 
@@ -47,7 +46,7 @@ pub struct Generic<Pins, const NUM_STEPS: usize, Delay> {
     steps: [u8; NUM_STEPS],
     step: Option<u8>,
     direction: Option<Direction>,
-    _maker: PhantomData<Delay>,
+    delay: Delay,
 }
 
 impl<const NUM_STEPS: usize> Generic<(), NUM_STEPS, ()> {
@@ -58,15 +57,15 @@ impl<const NUM_STEPS: usize> Generic<(), NUM_STEPS, ()> {
             steps,
             step: None,
             direction: None,
-            _maker: PhantomData::default(),
+            delay: (),
         }
     }
 }
 
-impl<Pins, const NUM_STEPS: usize> EnableDirectionControl<()>
-    for Generic<Pins, NUM_STEPS, ()>
+impl<Pins, const NUM_STEPS: usize, Delay> EnableDirectionControl<()>
+    for Generic<Pins, NUM_STEPS, Delay>
 {
-    type WithDirectionControl = Generic<Pins, NUM_STEPS, ()>;
+    type WithDirectionControl = Generic<Pins, NUM_STEPS, Delay>;
 
     fn enable_direction_control(self, _: ()) -> Self::WithDirectionControl {
         Generic {
@@ -74,7 +73,7 @@ impl<Pins, const NUM_STEPS: usize> EnableDirectionControl<()>
             steps: self.steps,
             step: self.step,
             direction: self.direction,
-            _maker: self._maker,
+            delay: self.delay,
         }
     }
 }
@@ -95,8 +94,8 @@ impl OutputPin for FooPin {
     }
 }
 
-impl<Pins, const NUM_STEPS: usize> SetDirection
-    for Generic<Pins, NUM_STEPS, ()>
+impl<Pins, const NUM_STEPS: usize, Delay> SetDirection
+    for Generic<Pins, NUM_STEPS, Delay>
 {
     const SETUP_TIME: Nanoseconds = Nanoseconds::from_ticks(0);
 
@@ -118,8 +117,8 @@ impl<
         Delay: DelayUs,
         const STEP_BUS_WIDTH: usize,
         const NUM_STEPS: usize,
-    > EnableStepControl<[LinePin; STEP_BUS_WIDTH]>
-    for Generic<(), NUM_STEPS, ()>
+    > EnableStepControl<[LinePin; STEP_BUS_WIDTH], Delay>
+    for Generic<(), NUM_STEPS, Delay>
 {
     type WithStepControl = Generic<[LinePin; STEP_BUS_WIDTH], NUM_STEPS, Delay>;
 
@@ -132,7 +131,7 @@ impl<
             steps: self.steps,
             step: self.step,
             direction: self.direction,
-            _maker: PhantomData::default(),
+            delay: self.delay,
         }
     }
 }
@@ -220,8 +219,8 @@ pub enum GenericStepError {
 //     }
 // }
 
-impl<LinePin, const STEP_BUS_WIDTH: usize, const NUM_STEPS: usize>
-    Generic<[LinePin; STEP_BUS_WIDTH], NUM_STEPS, ()>
+impl<LinePin, const STEP_BUS_WIDTH: usize, const NUM_STEPS: usize, Delay>
+    Generic<[LinePin; STEP_BUS_WIDTH], NUM_STEPS, Delay>
 {
     fn create_step_actions<'a, F>(
         &'a mut self,
@@ -249,30 +248,30 @@ impl<LinePin, const STEP_BUS_WIDTH: usize, const NUM_STEPS: usize>
 impl<
         LinePin,
         OutputPinError,
+        Delay,
         const STEP_BUS_WIDTH: usize,
         const NUM_STEPS: usize,
-    > ReleaseCoils<STEP_BUS_WIDTH>
-    for Generic<[LinePin; STEP_BUS_WIDTH], NUM_STEPS, ()>
+    > ReleaseCoils
+    for Generic<[LinePin; STEP_BUS_WIDTH], NUM_STEPS, Delay>
 where
     LinePin: OutputPin<Error = OutputPinError>,
     OutputPinError: Debug,
 {
-    const PULSE_LENGTH: Nanoseconds = Nanoseconds::from_ticks(0);
-    type StepPin = LinePin;
     type Error = LinePin::Error;
 
-    fn release_coils(
+    async fn release_coils<Delay2: DelayUs>(
         &mut self,
-    ) -> Result<
-        [OutputPinAction<&mut Self::StepPin>; STEP_BUS_WIDTH],
-        Self::Error,
-    > {
-        Ok(self.create_step_actions(|_, pin| OutputPinAction::Set(pin, Low)))
+        _: &mut Delay2
+    ) -> Result<(), Self::Error> {
+        for pin in self.pins.iter_mut() {
+            pin.set_state(Low)?
+        }
+        Ok(())
     }
 }
 
-impl<LinePin, const STEP_BUS_WIDTH: usize, const NUM_STEPS: usize>
-    Generic<[LinePin; STEP_BUS_WIDTH], NUM_STEPS, ()>
+impl<LinePin, Delay, const STEP_BUS_WIDTH: usize, const NUM_STEPS: usize>
+    Generic<[LinePin; STEP_BUS_WIDTH], NUM_STEPS, Delay>
 {
     /// Sets the current step in the provided step sequence. Has to be less than the "total number of steps"
     pub fn set_step(&mut self, step: u8) -> Result<(), ()> {
@@ -291,11 +290,13 @@ mod test {
     use crate::test_utils::{NoDelay, OkTimer};
     use crate::{motion_control, test_utils::MockPin, Direction, Stepper};
     use core::convert::Infallible;
-    use core::task::Poll;
-    use embedded_hal::digital::blocking::OutputPin;
+    use embedded_hal::digital::OutputPin;
+    use fixed::FixedI64;
     use fixed::traits::Fixed;
     use fugit::TimerDurationU32;
     use mockall::mock;
+    use ramp_maker::Trapezoidal;
+    use typenum::U32;
 
     type FixedI64U32 = fixed::FixedI64<typenum::U32>;
     mock! {
@@ -353,12 +354,14 @@ mod test {
 
             let mut dir_timer = OkTimer::<1>::new();
 
+            let mut delay = NoDelay {};
+
             let pins = [&mut pin1, &mut pin2];
             let mut stepper = Stepper::from_driver(Generic::new(steps))
+                .set_delay(delay)
                 .enable_direction_control(
                     (),
-                    Direction::Backward,
-                    &mut dir_timer,
+                    Direction::Backward
                 )
                 .expect("setting dit control to work")
                 .enable_step_control(pins);
@@ -383,24 +386,22 @@ mod test {
                 pin1.expect_set_low().return_once(|| Ok(()));
                 pin2.expect_set_high().return_once(|| Ok(()));
 
-                let mut dir_timer = OkTimer::<1>::new();
-
                 let pins = [&mut pin1, &mut pin2];
+                let mut delay = NoDelay;
+
                 let mut stepper = Stepper::from_driver(Generic::new(steps))
+                    .set_delay(delay)
                     .enable_direction_control(
                         (),
-                        Direction::Backward,
-                        &mut dir_timer,
+                        Direction::Backward
                     )
                     .expect("setting dit control to work")
                     .enable_step_control(pins);
 
-                let mut delay = NoDelay;
-
                 assert_eq!(stepper.driver().step, None);
 
                 stepper
-                    .step::<[&mut MockPin; 2], NoDelay>(&mut delay)
+                    .step(&mut delay)
                     .await
                     .expect("Stepping did not work");
                 assert_eq!(stepper.driver().step, Some(1));
@@ -416,22 +417,21 @@ mod test {
                 let mut dir_timer = OkTimer::<1>::new();
 
                 let pins = [&mut pin1, &mut pin2];
+                let mut delay = NoDelay;
                 let mut stepper = Stepper::from_driver(Generic::new(steps))
+                    .set_delay(delay)
                     .enable_direction_control(
                         (),
-                        Direction::Backward,
-                        &mut dir_timer,
+                        Direction::Backward
                     )
                     .expect("setting dit control to work")
-                    .enable_step_control::<[&mut MockPin; 2], NoDelay>(pins);
-
-                let mut delay = NoDelay;
+                    .enable_step_control(pins);
 
                 stepper.driver().set_step(1).expect("step be set");
                 assert_eq!(stepper.driver().step, Some(1));
 
                 stepper
-                    .step::<[&mut MockPin; 2], NoDelay>(&mut delay)
+                    .step(&mut delay)
                     .await
                     .expect("Stepping did not work");
 
@@ -455,41 +455,35 @@ mod test {
         let mut dir_timer = OkTimer::<1>::new();
 
         let max_velocity = FixedI64U32::from_num(0.001);
-        let profile = ramp_maker::Trapezoidal::new(max_velocity);
+        let profile: Trapezoidal<FixedI64<U32>> = Trapezoidal::new(max_velocity);
 
         let pins = [&mut pin1];
+        let mut delay = NoDelay;
         let stepper = Stepper::from_driver(Generic::new(steps))
-            .enable_direction_control((), Direction::Backward, &mut dir_timer)
+            .set_delay(delay)
+            .enable_direction_control((), Direction::Backward)
             .expect("setting dir control to work")
             .enable_step_control(pins);
         let mut stepper =
-            stepper.enable_motion_control((dir_timer, profile, NoDelay));
+            stepper.enable_motion_control((dir_timer, profile));
 
         let num_steps = 10;
 
         {
             // Assuming motion range of 0..=10 with the starting step at 0
             // Moving to position 10
-            let mut fut = stepper.move_to_position(max_velocity, num_steps);
-            // Counting Pending polls is a brittle approach as the counts get thrown off by any changes
-            // to the underlying logic of the software motion controller.
+            let res = stepper.move_to_position(max_velocity, num_steps).await;
             // Expecting the correct count of High/Low pulses on the pin should be the correct approach here.
-            while fut.poll() == Poll::Pending {
-                assert_eq!(fut.poll(), Poll::Pending);
-            }
-            assert_eq!(fut.poll(), Poll::Ready(Ok(())));
+            assert_eq!(res, Ok(()));
         }
 
         // Moving to position 6 from position 10, 4 steps in total
         {
             let going_back_steps = 4;
-            let mut fut2 = stepper
-                .move_to_position(max_velocity, num_steps - going_back_steps);
+            let res = stepper
+                .move_to_position(max_velocity, num_steps - going_back_steps).await;
 
-            while fut2.poll() == Poll::Pending {
-                assert_eq!(fut2.poll(), Poll::Pending);
-            }
-            assert_eq!(fut2.poll(), Poll::Ready(Ok(())));
+            assert_eq!(res, Ok(()));
         }
     }
 
@@ -516,9 +510,12 @@ mod test {
         let pins = [&mut pin];
         let driver = Generic::new([1, 1]);
 
-        let mut stepper =
-            Stepper::from_driver(driver).enable_step_control(pins);
         let mut delay = NoDelay;
+        let mut stepper =
+            Stepper::from_driver(driver)
+                .set_delay(delay)
+                .enable_step_control(pins);
+
         stepper.step(&mut delay).await.expect("stepping failed");
         assert_eq!(stepper.driver().step, Some(1));
         stepper

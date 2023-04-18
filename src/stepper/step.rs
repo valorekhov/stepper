@@ -5,7 +5,7 @@ use core::future::Future;
 use core::task::Poll::{Pending, Ready};
 use core::task::{Context, Poll};
 
-use embedded_hal::digital::blocking::OutputPin;
+use embedded_hal::digital::{OutputPin, PinState};
 use embedded_hal_async::delay::DelayUs;
 use fugit::NanosDurationU32;
 use futures::pin_mut;
@@ -33,7 +33,7 @@ pub struct StepFuture<
     duration: NanosDurationU32,
     trailing: [OutputPinAction<OutputPin>; STEP_BUS_WIDTH],
     delay: Delay,
-    state: State<Pin<&'r mut Delay::DelayUsFuture<'r>>>,
+    state: State<Pin<&'r mut dyn Future<Output = Result<(), Delay::Error>>>>,
 }
 
 impl<'r, Delay: DelayUs, OutputPin, const STEP_BUS_WIDTH: usize>
@@ -71,7 +71,7 @@ impl<'r, Delay: DelayUs, OutputPin, const STEP_BUS_WIDTH: usize>
     /// [`Stepper::step`] instead.
     ///
     /// [`Stepper::step`]: crate::Stepper::step
-    pub fn new_from_delay(
+    pub fn new(
         leading: [OutputPinAction<&'r mut OutputPin>; STEP_BUS_WIDTH],
         duration: NanosDurationU32,
         trailing: [OutputPinAction<&'r mut OutputPin>; STEP_BUS_WIDTH],
@@ -184,7 +184,7 @@ where
                         Ready(Err(SignalError::Timer(err)))
                     }
                     Pending => Pending,
-                    _ => panic!("Unhandled branch of logic while working with the Delay/Timer")
+                    _ => unreachable!(),
                 }
             }
             State::Finished => Ready(Ok(())),
@@ -196,4 +196,30 @@ enum State<Fut> {
     Initial,
     PulseStarted(Fut),
     Finished,
+}
+
+pub async fn toggle_pin<Pin: OutputPin, Delay: DelayUs>(
+    pin: &mut Pin,
+    duration: NanosDurationU32,
+    delay: &mut Delay,
+) -> Result<(), SignalError<Infallible, Pin::Error, Delay::Error>> {
+    pin.set_state(PinState::High).map_err(SignalError::Pin)?;
+    delay.delay_us(duration.to_micros()).await.map_err(SignalError::Timer)?;
+    pin.set_state(PinState::Low).map_err(SignalError::Pin)?;
+    Ok(())
+}
+
+pub async fn toggle_pins<Pin: OutputPin, Delay: DelayUs>(
+    pins: &mut [Pin],
+    duration: NanosDurationU32,
+    delay: &mut Delay,
+) -> Result<(), SignalError<Infallible, Pin::Error, Delay::Error>> {
+    for pin in pins.iter_mut() {
+        pin.set_state(PinState::High).map_err(SignalError::Pin)?;
+    }
+    delay.delay_us(duration.to_micros()).await.map_err(SignalError::Timer)?;
+    for pin in pins.iter_mut() {
+        pin.set_state(PinState::Low).map_err(SignalError::Pin)?;
+    }
+    Ok(())
 }

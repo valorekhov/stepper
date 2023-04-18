@@ -20,7 +20,9 @@ use core::future::Future;
 use embedded_hal_async::delay::DelayUs;
 
 /// Placeholder trait to track Async functionality being enabled on a driver
-pub trait DelayAsyncEnabled<Delay: DelayUs> {}
+pub trait DelayAsyncEnabled<Delay: DelayUs> {
+    fn delay(self) -> Delay;
+}
 
 /// Implemented by drivers that support controlling the DIR signal
 pub trait SetDelayAsync {
@@ -81,9 +83,9 @@ where
 // }
 
 /// Implemented by drivers which have logic allowing to release motor coils
-pub trait ReleaseAsync<Resources>
+pub trait ReleaseAsync<Resources, Delay>
 where
-    Self: EnableStepControl<Resources>,
+    Self: EnableStepControl<Resources, Delay>,
 {
     /// The output future type
     type OutputFut: Future<Output = Result<(), Self::Error>>;

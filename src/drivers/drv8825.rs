@@ -10,10 +10,9 @@
 //! [embedded-hal]: https://crates.io/crates/embedded-hal
 
 use core::convert::Infallible;
-use core::marker::PhantomData;
 
 use embedded_hal::digital::PinState::{High, Low};
-use embedded_hal::digital::{blocking::OutputPin, PinState};
+use embedded_hal::digital::{OutputPin, PinState};
 use embedded_hal_async::delay::DelayUs;
 use fugit::NanosDurationU32 as Nanoseconds;
 
@@ -24,7 +23,8 @@ use crate::{
         EnableDirectionControl, EnableStepControl, EnableStepModeControl,
         SetDirection, SetStepMode, Step as StepAsyncTrait,
     },
-    Direction, SignalError, StepFuture,
+    Direction, SignalError,
+    toggle_pin,
 };
 
 const STEP_PIN_BUS_WIDTH: usize = 1;
@@ -44,7 +44,6 @@ pub struct DRV8825<
     Mode2,
     Step,
     Dir,
-    Delay,
 > {
     enable: Enable,
     fault: Fault,
@@ -54,11 +53,10 @@ pub struct DRV8825<
     mode1: Mode1,
     mode2: Mode2,
     step: Step,
-    dir: Dir,
-    _maker: PhantomData<Delay>,
+    dir: Dir
 }
 
-impl DRV8825<(), (), (), (), (), (), (), (), (), ()> {
+impl DRV8825<(), (), (), (), (), (), (), (), ()> {
     /// Create a new instance of `DRV8825`
     pub fn new() -> Self {
         Self {
@@ -70,15 +68,14 @@ impl DRV8825<(), (), (), (), (), (), (), (), (), ()> {
             mode1: (),
             mode2: (),
             step: (),
-            dir: (),
-            _maker: PhantomData::default(),
+            dir: ()
         }
     }
 }
 
 impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError>
     EnableStepModeControl<(Reset, Mode0, Mode1, Mode2)>
-    for DRV8825<(), (), (), (), (), (), (), Step, Dir, ()>
+    for DRV8825<(), (), (), (), (), (), (), Step, Dir>
 where
     Reset: OutputPin<Error = OutputPinError>,
     Mode0: OutputPin<Error = OutputPinError>,
@@ -86,7 +83,7 @@ where
     Mode2: OutputPin<Error = OutputPinError>,
 {
     type WithStepModeControl =
-        DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir, ()>;
+        DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir>;
 
     fn enable_step_mode_control(
         self,
@@ -101,14 +98,13 @@ where
             mode1,
             mode2,
             step: self.step,
-            dir: self.dir,
-            _maker: self._maker,
+            dir: self.dir
         }
     }
 }
 
 impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError> SetStepMode
-    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir, ()>
+    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir>
 where
     Reset: OutputPin<Error = OutputPinError>,
     Mode0: OutputPin<Error = OutputPinError>,
@@ -156,12 +152,12 @@ where
 
 impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError>
     EnableDirectionControl<Dir>
-    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, (), ()>
+    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, ()>
 where
     Dir: OutputPin<Error = OutputPinError>,
 {
     type WithDirectionControl =
-        DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir, ()>;
+        DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir>;
 
     fn enable_direction_control(self, dir: Dir) -> Self::WithDirectionControl {
         DRV8825 {
@@ -174,13 +170,12 @@ where
             mode2: self.mode2,
             step: self.step,
             dir,
-            _maker: self._maker,
         }
     }
 }
 
 impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError> SetDirection
-    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir, ()>
+    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir>
 where
     Dir: OutputPin<Error = OutputPinError>,
 {
@@ -206,14 +201,13 @@ where
 }
 
 impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError, Delay>
-    EnableStepControl<Step>
-    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, (), Dir, Delay>
+    EnableStepControl<Step, Delay>
+    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, (), Dir>
 where
-    Step: OutputPin<Error = OutputPinError>,
-    Delay: DelayUs,
+    Step: OutputPin<Error = OutputPinError>
 {
     type WithStepControl =
-        DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir, Delay>;
+        DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir>;
 
     fn enable_step_control(self, step: Step) -> Self::WithStepControl {
         DRV8825 {
@@ -226,7 +220,6 @@ where
             mode2: self.mode2,
             step,
             dir: self.dir,
-            _maker: PhantomData::default(),
         }
     }
 }
@@ -243,32 +236,34 @@ where
 //         SignalError<Infallible, OutputPinError, Delay::Error>;
 // }
 
-impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError, Delay>
+impl<Reset, Mode0, Mode1, Mode2, Step, Dir, OutputPinError>
     StepAsyncTrait
-    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir, Delay>
+    for DRV8825<(), (), (), Reset, Mode0, Mode1, Mode2, Step, Dir>
 where
     Step: OutputPin<Error = OutputPinError>,
-    Delay: DelayUs,
 {
-    type Delay = Delay;
-
     type OutputStepFutureResult = ();
     type OutputStepFutureError =
-        SignalError<Infallible, OutputPinError, Delay::Error>;
+        // TODO: Figure out how to specify Delay::Error as the 3rd arg below
+        SignalError<Infallible, OutputPinError, ()>;
 
-    type OutputStepFuture<'r> = StepFuture<'r, &'r mut Delay, &'r mut Step, STEP_PIN_BUS_WIDTH> where Self: 'r;
-
-    fn step<'r>(
-        &'r mut self,
-        delay: &'r mut Delay,
-    ) -> Self::OutputStepFuture<'r> {
-        StepFuture::new_from_delay(
-            [OutputPinAction::Set(&mut self.step, High)],
-            // 7.6 Timing Requirements (page 7)
-            // https://www.ti.com/lit/ds/symlink/drv8825.pdf
-            Nanoseconds::from_ticks(1900),
-            [OutputPinAction::Set(&mut self.step, High)],
-            delay,
-        )
+    async fn step<Delay: DelayUs>(
+        &mut self,
+        delay: &mut Delay,
+    ) -> Result<
+        Self::OutputStepFutureResult,
+        Self::OutputStepFutureError,
+    > {
+        // 7.6 Timing Requirements (page 7)
+        // https://www.ti.com/lit/ds/symlink/drv8825.pdf
+        toggle_pin(&mut self.step, Nanoseconds::from_ticks(1900), delay)
+            .await
+            .map_err(|e| match e {
+                SignalError::PinUnavailable(e) => SignalError::PinUnavailable(e),
+                SignalError::Pin(e) => SignalError::Pin(e),
+                SignalError::Timer(_) => SignalError::Timer(()),
+            })?;
+        
+        Ok(())
     }
 }
